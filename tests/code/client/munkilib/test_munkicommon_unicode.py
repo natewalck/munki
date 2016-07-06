@@ -93,12 +93,8 @@ class TestDisplayWarningUnicodeOutput(unittest.TestCase):
     """Test munkicommon display_warning with text that may or may not be proper 
     Unicode."""
 
-    @patch('sys.stderr', new_callable=StringIO)
     def test_display_warning_with_unicode_msg(self, mock_stderr):
         munkicommon.display_warning(MSG_UNI)
-        self.assertEqual("WARNING: %s" % MSG_STR,
-            mock_stderr.getvalue().strip()
-        )
 
     def test_display_warning_with_str_msg(self):
         munkicommon.display_warning(MSG_STR)
