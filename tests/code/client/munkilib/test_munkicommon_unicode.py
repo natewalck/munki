@@ -24,13 +24,16 @@ Unit tests for munkicommon's display_* functions.
 import code.client.munkilib.munkicommon as munkicommon
 import sys
 import unittest
-
+from StringIO import StringIO
+from mock import patch
 
 MSG_UNI = u'Günther\'s favorite thing is %s'
 MSG_STR = 'Günther\'s favorite thing is %s'
 
 ARG_UNI = u'Günther'
 ARG_STR = 'Günther'
+
+RESULT_STR = 'Günther\'s favorite thing is %s' % ARG_STR
 
 def log(msg, logname=''):
     """Redefine munkicommon's logging function so our tests don't write
@@ -43,31 +46,59 @@ class TestDisplayInfoUnicodeOutput(unittest.TestCase):
     """Test munkicommon display_info with text that may or may not be proper 
     Unicode."""
 
-    def test_display_info_with_unicode_msg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_unicode_msg(self, mock_stdout):
         munkicommon.display_info(MSG_UNI)
+        self.assertEqual(MSG_STR,
+            mock_stdout.getvalue().strip()
+        )
 
-    def test_display_info_with_str_msg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_str_msg(self, mock_stdout):
         munkicommon.display_info(MSG_STR)
+        self.assertEqual(MSG_STR,
+            mock_stdout.getvalue().strip()
+        )
 
-    def test_display_info_with_unicode_msg_unicode_arg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_unicode_msg_unicode_arg(self, mock_stdout):
         munkicommon.display_info(MSG_UNI, ARG_UNI)
+        self.assertEqual(RESULT_STR,
+            mock_stdout.getvalue().strip()
+        )
 
-    def test_display_info_with_unicode_msg_str_arg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_unicode_msg_str_arg(self, mock_stdout):
         munkicommon.display_info(MSG_UNI, ARG_STR)
+        self.assertEqual(RESULT_STR,
+            mock_stdout.getvalue().strip()
+        )
 
-    def test_display_info_with_str_msg_unicode_arg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_str_msg_unicode_arg(self, mock_stdout):
         munkicommon.display_info(MSG_STR, ARG_UNI)
+        self.assertEqual(RESULT_STR,
+            mock_stdout.getvalue().strip()
+        )
 
-    def test_display_info_with_str_msg_str_arg(self):
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_display_info_with_str_msg_str_arg(self, mock_stdout):
         munkicommon.display_info(MSG_STR, ARG_STR)
+        self.assertEqual(RESULT_STR,
+            mock_stdout.getvalue().strip()
+        )
 
 
 class TestDisplayWarningUnicodeOutput(unittest.TestCase):
     """Test munkicommon display_warning with text that may or may not be proper 
     Unicode."""
 
-    def test_display_warning_with_unicode_msg(self):
+    @patch('sys.stderr', new_callable=StringIO)
+    def test_display_warning_with_unicode_msg(self, mock_stderr):
         munkicommon.display_warning(MSG_UNI)
+        self.assertEqual("WARNING: %s" % MSG_STR,
+            mock_stderr.getvalue().strip()
+        )
 
     def test_display_warning_with_str_msg(self):
         munkicommon.display_warning(MSG_STR)
