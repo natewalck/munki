@@ -21,7 +21,7 @@ Unit tests for munkicommon's display_* functions.
 # limitations under the License.
 
 
-import munkicommon
+import code.client.munkilib.munkicommon as munkicommon
 import sys
 import unittest
 
