@@ -24,6 +24,7 @@ def is_managed_update_true():
 def is_managed_update_false():
     return False
 
+
 def catalogs():
     return {
         'prod': {
@@ -31,7 +32,7 @@ def catalogs():
             'items': [
                 {
                     "autoremove": 0,
-                    "catalogs":  [
+                    "catalogs": [
                         "testing",
                         "it_dept",
                         "cpe",
