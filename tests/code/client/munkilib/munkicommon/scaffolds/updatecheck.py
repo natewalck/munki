@@ -1,10 +1,8 @@
 def manifestitem():
-    # Datatype should be <type 'objc.pyobjc_unicode'>
     return u'Firefox'
 
 def cataloglist():
-    # Datatype should be <objective-c class __NSCFArray at 0x1093e9bc8>
-    return ('prod')
+    return ['prod']
 
 def installinfo():
     return {
