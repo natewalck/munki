@@ -3,7 +3,7 @@ def manifestitem():
 
 
 def cataloglist():
-    return ['prod']
+    return ['unittest']
 
 
 def installinfo():

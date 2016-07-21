@@ -42,23 +42,42 @@ class TestProcessInstall(unittest.TestCase):
     """Test munkicommon.processInstall"""
 
     def setUp(self):
+        self.cataloglist = scaffolds.cataloglist()
+        self.installinfo = scaffolds.installinfo()
         return
 
     def tearDown(self):
         return
 
     def test_already_processed_install(self):
-        updatecheck.processInstall(
-            scaffolds.manifestitem(),
-            scaffolds.cataloglist(),
-            scaffolds.installinfo()
+        print("processInstall for an already processed install item...")
+        self.installinfo['processed_installs'].append('Firefox')
+        processinstall_result = updatecheck.processInstall(
+            u'Firefox',
+            self.cataloglist,
+            self.installinfo
         )
+        self.assertEqual(processinstall_result, True)
 
     def test_already_processed_uninstall(self):
-        pass
+        print("processInstall for an already processed uninstall item...")
+        self.installinfo['processed_uninstalls'].append('Firefox')
+        processinstall_result = updatecheck.processInstall(
+            u'Firefox',
+            self.cataloglist,
+            self.installinfo
+        )
+        self.assertEqual(processinstall_result, False)
 
     def test_no_pkginfo_found_in_catalogs(self):
-        pass
+        # This needs to be mocked out some more. It doesn't actually have a scaffold catalog
+        print("processInstall for an item not in the catalogs...")
+        processinstall_result = updatecheck.processInstall(
+            u'DoesNotExist',
+            self.cataloglist,
+            self.installinfo
+        )
+        self.assertEqual(processinstall_result, False)
 
     def test_is_or_will_be_installed(self):
         pass
