@@ -1,8 +1,10 @@
 def manifestitem():
     return u'Firefox'
 
+
 def cataloglist():
     return ['prod']
+
 
 def installinfo():
     return {
@@ -14,8 +16,10 @@ def installinfo():
         'processed_uninstalls': []
     }
 
+
 def is_managed_update_true():
     return True
+
 
 def is_managed_update_false():
     return False

@@ -32,10 +32,11 @@ except ImportError:
     print >>sys.stderr, "mock module is required. run: easy_install mock"
     raise
 
-## ToDo
+# ToDo
 # Mock manifestiem
 # Mock cataloglist
 # Mock installinfo
+
 
 class TestProcessInstall(unittest.TestCase):
     """Test munkicommon.processInstall"""
@@ -58,7 +59,7 @@ class TestProcessInstall(unittest.TestCase):
 
     def test_no_pkginfo_found_in_catalogs(self):
         pass
- 
+
     def test_is_or_will_be_installed(self):
         pass
 
@@ -91,4 +92,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
