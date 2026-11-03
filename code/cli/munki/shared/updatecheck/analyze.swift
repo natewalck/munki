@@ -186,23 +186,6 @@ func shouldDeferDownloadForLowData(
     }
 }
 
-/// Returns the pkginfo of an already installed version newer than `selected` that this machine
-/// isn't eligible for, if any. Evaluating the older version could otherwise report it as not
-/// installed (a changed path or an installcheck_script, for example), and Munki never
-/// downgrades because of a deployment.
-func installedVersionNotEligible(_ itemName: String, newerThan selected: PlistDict?) async -> PlistDict? {
-    let records = DeploymentRecords.shared
-    let selectedVersion = MunkiVersion(selected?["version"] as? String ?? "0")
-    for pkginfo in records.notEligible[records.key(manifestItem: itemName)] ?? [] {
-        if MunkiVersion(pkginfo["version"] as? String ?? "0") > selectedVersion,
-           await installedState(pkginfo) != .thisVersionNotInstalled
-        {
-            return pkginfo
-        }
-    }
-    return nil
-}
-
 /// Processes a manifest item for install. Determines if it needs to be
 /// installed, and if so, if any items it is dependent on need to
 /// be installed first.  Installation detail is added to
@@ -216,8 +199,7 @@ func processInstall(
     installInfo: inout PlistDict,
     isManagedUpdate: Bool = false,
     isOptionalInstall: Bool = false,
-    lowDataExempt: Bool = false,
-    deploymentRequiredBy: String? = nil
+    lowDataExempt: Bool = false
 ) async -> Bool {
     /// helper function
     func appendToProcessedManagedInstalls(_ item: PlistDict) {
@@ -245,51 +227,13 @@ func processInstall(
     display.debug1("* Processing manifest item \(manifestItemName) for install")
     let (manifestItemNameWithoutVersion, includedVersion) = nameAndVersion(manifestItemName, onlySplitOnHyphens: true)
 
-    // an eligible item requires a version this machine wasn't otherwise eligible for,
-    // so any older version processed earlier is no longer the right one
     let records = DeploymentRecords.shared
     let itemKey = records.key(manifestItemNameWithoutVersion)
-    if deploymentRequiredBy != nil,
-       let notEligibleVersions = records.notEligible[itemKey],
-       let requiredPkginfo = await getItemDetail(
-           manifestItemName,
-           catalogList: catalogList,
-           deploymentRequiredBy: deploymentRequiredBy
-       ),
-       notEligibleVersions.contains(where: { $0["version"] as? String == requiredPkginfo["version"] as? String })
-    {
-        let processedInstalls = installInfo["processed_installs"] as? [String] ?? []
-        installInfo["processed_installs"] = processedInstalls.filter { records.key($0) != itemKey }
-        let managedInstalls = installInfo["managed_installs"] as? [PlistDict] ?? []
-        installInfo["managed_installs"] = managedInstalls.filter {
-            records.key($0["name"] as? String ?? "") != itemKey
-        }
-    }
 
     // have we processed this already?
     if let processedInstalls = installInfo["processed_installs"] as? [String],
        processedInstalls.contains(manifestItemName) || processedInstalls.contains(manifestItemNameWithoutVersion)
     {
-        // an older version processed earlier doesn't meet a requirement for a newer
-        // version that only a deployment is keeping from this machine
-        let processedVersions = (installInfo["managed_installs"] as? [PlistDict] ?? []).filter {
-            records.key($0["name"] as? String ?? "") == itemKey
-        }.compactMap {
-            $0["version_to_install"] as? String ?? $0["installed_version"] as? String
-        }
-        if !includedVersion.isEmpty,
-           !processedVersions.contains(where: { MunkiVersion($0) >= MunkiVersion(includedVersion) }),
-           await getItemDetail(
-               manifestItemName,
-               catalogList: catalogList,
-               suppressWarnings: true,
-               deploymentRequiredBy: deploymentRequiredBy
-           ) == nil,
-           records.isWaiting(manifestItemName),
-           await installedVersionNotEligible(manifestItemName, newerThan: nil) == nil
-        {
-            return false
-        }
         display.debug1("\(manifestItemNameWithoutVersion) has already been processed for install.")
         return true
     }
@@ -300,13 +244,7 @@ func processInstall(
         return false
     }
 
-    let selectedPkginfo = await getItemDetail(
-        manifestItemName,
-        catalogList: catalogList,
-        deploymentRequiredBy: deploymentRequiredBy
-    )
-    let installedNotEligible = await installedVersionNotEligible(manifestItemName, newerThan: selectedPkginfo)
-    guard let pkginfo = installedNotEligible ?? selectedPkginfo else {
+    guard let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList) else {
         if !records.isWaiting(manifestItemName) {
             display.warning("Could not process item \(manifestItemName) for install. No pkginfo found in catalogs: \(catalogList)")
         }
@@ -386,9 +324,6 @@ func processInstall(
     var someDepDeferredForLowData = false
     var someDepFailedOtherwise = false
     var someDepWaitingOnDeployment = false
-    // an eligible item with a deployment brings along what it requires
-    let deploymentRequiredByForDependencies = installedNotEligible != nil ? nil
-        : (pkginfo["deployment"] != nil ? name : deploymentRequiredBy)
     for item in dependencies {
         display.detail("\(name)-\(version) requires \(item). Getting info on \(item)...")
         let success = await processInstall(
@@ -397,8 +332,7 @@ func processInstall(
             installInfo: &installInfo,
             isManagedUpdate: isManagedUpdate,
             isOptionalInstall: isOptionalInstall,
-            lowDataExempt: lowDataExemptForDependencies,
-            deploymentRequiredBy: deploymentRequiredByForDependencies
+            lowDataExempt: lowDataExemptForDependencies
         )
         if !success {
             dependenciesMet = false
@@ -819,13 +753,6 @@ func processOptionalInstall(
     ) {
         pkginfo = testPkginfo
     }
-    let installedNotEligible = await installedVersionNotEligible(
-        manifestItemName,
-        newerThan: pkginfo.isEmpty ? nil : pkginfo
-    )
-    if let installedNotEligible {
-        pkginfo = installedNotEligible
-    }
 
     if pkginfo.isEmpty,
        let show = boolPref("ShowOptionalInstallsForHigherOSVersions"),
@@ -895,7 +822,6 @@ func processOptionalInstall(
         }
 
         if !needsUpdate,
-           installedNotEligible == nil,
            let show = boolPref("ShowOptionalInstallsForHigherOSVersions"),
            show == true
         {
