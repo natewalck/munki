@@ -358,7 +358,7 @@ func checkForUpdates(clientID: String? = nil, localManifestPath: String? = nil) 
 
         // now check for implicit removals
         // use catalogs from main manifest
-        let autoremovalItems = getAutoRemovalItems(installInfo: installInfo, catalogList: mainManifestCatalogsList)
+        let autoremovalItems = await getAutoRemovalItems(installInfo: installInfo, catalogList: mainManifestCatalogsList)
         if !autoremovalItems.isEmpty {
             display.detail("**Checking for implicit removals**")
             for item in autoremovalItems {

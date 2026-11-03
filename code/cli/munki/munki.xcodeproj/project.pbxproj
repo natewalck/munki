@@ -299,6 +299,8 @@
 		C0684E7A2DC7BF590091E774 /* scriptutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D9C2A22C61939E0019A067 /* scriptutils.swift */; };
 		C0684E7B2DC7BF720091E774 /* munkihash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C030A98E2C39C135007F0B34 /* munkihash.swift */; };
 		D3E1A0022F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0062F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0052F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
 		C0684E7C2DC7BFAD0091E774 /* appinventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07AED622C66CFBD00DE6119 /* appinventory.swift */; };
 		C0684E7D2DC7C3710091E774 /* installationstate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01792E42C73FFD4008CBC22 /* installationstate.swift */; };
 		C0684E7E2DC7C3850091E774 /* osutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07074E42C34910F00B86310 /* osutils.swift */; };
@@ -2366,6 +2368,7 @@
 				C0D66AB92D2C923E009EF807 /* common.swift in Sources */,
 				C01364582C3265D6008DB215 /* display.swift in Sources */,
 				C01792DC2C6FFAC6008CBC22 /* catalogs.swift in Sources */,
+				D3E1A0052F90000000DE0001 /* deployment.swift in Sources */,
 				C07A9D9A2C83DDD000D5D4B2 /* installinfo.swift in Sources */,
 				C07074EB2C34A6AD00B86310 /* versionutils.swift in Sources */,
 				C01792E82C74F989008CBC22 /* selfservice.swift in Sources */,
@@ -2402,6 +2405,7 @@
 				C07AED702C67DF6B00DE6119 /* gurl.swift in Sources */,
 				C0011CAD2C7A64F30004ED70 /* Predicates.m in Sources */,
 				C01792DD2C6FFAC6008CBC22 /* catalogs.swift in Sources */,
+				D3E1A0062F90000000DE0001 /* deployment.swift in Sources */,
 				C0D9C2A12C6175A10019A067 /* processes.swift in Sources */,
 				C030A9F62C435183007F0B34 /* readline.swift in Sources */,
 				C0EEC9A82DA7335900F92942 /* clientcerts.swift in Sources */,

@@ -45,6 +45,90 @@ class Catalogs {
     }
 }
 
+/// a Singleton class to track what deployments decided during this run
+class DeploymentRecords {
+    static let shared = DeploymentRecords()
+
+    /// one time for the whole run, so a step can't open partway through
+    var now = Date()
+    /// pkginfos this machine isn't eligible for, including invalid deployments, by item name
+    var notEligible = [String: [PlistDict]]()
+    /// items that can't be processed only because of a deployment
+    var waiting = Set<String>()
+
+    private init() {}
+
+    func reset() {
+        now = Date()
+        notEligible = [:]
+        waiting = []
+    }
+
+    /// The key for an item name, with no version on it
+    func key(_ name: String) -> String {
+        return (name as NSString).precomposedStringWithCanonicalMapping
+    }
+
+    /// The key for a name from a manifest or `requires`, which can have a path and a version
+    func key(manifestItem: String) -> String {
+        let itemName = (manifestItem as NSString).lastPathComponent
+        return key(nameAndVersion(itemName, onlySplitOnHyphens: true).0)
+    }
+
+    func isWaiting(_ manifestItem: String) -> Bool {
+        return waiting.contains(key(manifestItem: manifestItem))
+    }
+}
+
+/// Why an item's deployment stops this machine from using it
+enum DeploymentRejection {
+    case notEligible(String)
+    case invalid(String)
+}
+
+/// Checks an item's deployment for this machine. Returns nil if there's no deployment or the
+/// machine is eligible. `requiredBy` lets an eligible item's requirement through, unless that
+/// deployment hasn't reached its start or is invalid.
+func deploymentRejection(
+    _ item: PlistDict,
+    machine: PlistDict,
+    requiredBy: String? = nil
+) -> DeploymentRejection? {
+    guard item["deployment"] != nil else {
+        return nil
+    }
+    let name = item["name"] as? String ?? "<unknown>"
+    let version = item["version"] as? String ?? "<unknown>"
+    let deployment: Deployment
+    do {
+        deployment = try Deployment(item["deployment"])
+    } catch {
+        return .invalid("\(name) \(version) has an invalid deployment: \(error)")
+    }
+    let state = deployment.state(at: DeploymentRecords.shared.now, toRealDate: subtractTZOffsetFromDate)
+    let packagePercent = packageDeployPercent(
+        identifier: deployPercentIdentifier(
+            serial: machine["serial_number"] as? String,
+            // not a machine fact, so it stays out of reports. Tests can supply it there.
+            hardwareUUID: machine["hardware_uuid"] as? String ?? hardwareUUID()
+        ),
+        itemName: name
+    )
+    if packagePercent <= state.currentPercent {
+        return nil
+    }
+    if requiredBy != nil, state.currentPercent > 0 {
+        return nil
+    }
+    var message = "\(name) \(version) not eligible: package_deploy_percent \(packagePercent) > current_deploy_percent \(state.currentPercent)"
+    if let nextStep = state.nextStepDate {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        message += " (next step \(formatter.string(from: nextStep)))"
+    }
+    return .notEligible(message)
+}
+
 typealias CatalogDBTable = [String: [String: [Int]]]
 
 /// Creates a dict we use like a database to query the catalogs for info
@@ -229,7 +313,7 @@ func getAllItemsWithName(_ name: String, catalogList: [String]) -> [PlistDict] {
 /// that is supposed to be installed.
 /// Then filters against the removals list, which contains all the removals
 /// that have already been processed.
-func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) -> [String] {
+func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) async -> [String] {
     var autoremovalNames = [String]()
     for catalogName in catalogList {
         if let catalogDB = Catalogs.shared.get(catalogName),
@@ -255,7 +339,21 @@ func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) -> [Stri
     autoremovalNames = autoremovalNames.filter {
         !processedInstallsNames.contains($0) &&
             !managedInstallsNames.contains($0) &&
-            !processedUninstallsNames.contains($0)
+            !processedUninstallsNames.contains($0) &&
+            !DeploymentRecords.shared.isWaiting($0)
+    }
+
+    // a version's autoremove only counts once the machine is eligible for that version
+    let machine = await getMachineFacts()
+    autoremovalNames = autoremovalNames.filter { name in
+        catalogList.contains { catalogName in
+            let items = Catalogs.shared.get(catalogName)?["items"] as? [PlistDict] ?? []
+            return items.contains {
+                $0["name"] as? String == name &&
+                    $0["autoremove"] as? Bool ?? false &&
+                    deploymentRejection($0, machine: machine) == nil
+            }
+        }
     }
 
     return autoremovalNames
@@ -483,10 +581,14 @@ func getItemDetail(
     catalogList: [String],
     version itemVersion: String = "",
     skipMinimumOSCheck: Bool = false,
-    suppressWarnings: Bool = false
+    suppressWarnings: Bool = false,
+    skipDeploymentCheck: Bool = false,
+    deploymentRequiredBy: String? = nil
 ) async -> PlistDict? {
     var rejectedItems = [String]()
+    var foundNotEligible = false
     let machine = await getMachineFacts()
+    let records = DeploymentRecords.shared
 
     /// Returns a boolean to indicate if the current Munki version is high
     /// enough to install this item. If not, also adds the failure reason to
@@ -611,6 +713,33 @@ func getItemDetail(
         return true
     }
 
+    /// Returns a boolean to indicate if this machine can use the item under
+    /// its deployment, if any. Machines not yet eligible aren't an error, so
+    /// this doesn't add to the rejected_items list.
+    func deploymentOK(_ item: PlistDict) -> Bool {
+        if skipDeploymentCheck {
+            return true
+        }
+        guard let rejection = deploymentRejection(item, machine: machine, requiredBy: deploymentRequiredBy) else {
+            return true
+        }
+        foundNotEligible = true
+        // an item can be looked up many times in a run, so only log a version once
+        let itemKey = records.key(item["name"] as? String ?? "")
+        let versions = records.notEligible[itemKey] ?? []
+        if versions.contains(where: { $0["version"] as? String == item["version"] as? String }) {
+            return false
+        }
+        records.notEligible[itemKey] = versions + [item]
+        switch rejection {
+        case let .notEligible(message):
+            display.info(message)
+        case let .invalid(message):
+            display.error(message)
+        }
+        return false
+    }
+
     var version = itemVersion
     var (name, includedVersion) = nameAndVersion(itemName, onlySplitOnHyphens: true)
     if !includedVersion.isEmpty, version.isEmpty {
@@ -659,9 +788,11 @@ func getItemDetail(
                     if munkiVersionOK(item),
                        osVersionOK(item),
                        cpuArchOK(item),
-                       await installableConditionOK(item)
+                       await installableConditionOK(item),
+                       deploymentOK(item)
                     {
                         display.debug1("Found \(item["name"] as? String ?? "<unknown>"), version \(item["version"] as? String ?? "<unknown>") in catalog \(catalogName)")
+                        records.waiting.remove(records.key(name))
                         return item
                     }
                 }
@@ -670,6 +801,11 @@ func getItemDetail(
     }
     // if we got this far, we didn't find it
     display.debug1("No applicable item found for name '\(name)'")
+    if foundNotEligible, rejectedItems.isEmpty {
+        records.waiting.insert(records.key(name))
+    } else {
+        records.waiting.remove(records.key(name))
+    }
     for reason in rejectedItems {
         if suppressWarnings {
             display.debug1(reason)
