@@ -275,6 +275,18 @@ struct Deployment {
         return wholeSeconds(date)
     }
 
+    /// Returns every step and its percent, in the raw pkginfo frame. A static deployment
+    /// has one step at its start, or none without a start.
+    func allSteps() -> [(date: Date, percent: Int)] {
+        guard case let .dated(dated) = schedule else {
+            if case let .fixed(percent, start?) = schedule {
+                return [(start, percent)]
+            }
+            return []
+        }
+        return (1 ... dated.totalSteps).map { (dated.date(forStep: $0), dated.percent(forStep: $0)) }
+    }
+
     /// Returns the deployment's state at `now`.
     ///
     /// pkginfo dates mean local time, so `12:00:00Z` is noon on each machine. The client passes

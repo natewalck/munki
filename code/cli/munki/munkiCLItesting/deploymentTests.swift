@@ -1604,3 +1604,235 @@ struct DeploymentRepocleanTests {
         }
     }
 }
+
+/// A repo in memory, so deploymentutil's reading can be tested
+private final class MemoryRepo: Repo {
+    var files = [String: Data]()
+
+    init(_: String) throws {}
+
+    func list(_ kind: String) async throws -> [String] {
+        return files.keys.filter { $0.hasPrefix(kind + "/") }.map { String($0.dropFirst(kind.count + 1)) }
+    }
+
+    func get(_ identifier: String) async throws -> Data {
+        guard let data = files[identifier] else { throw MunkiError("no such item") }
+        return data
+    }
+
+    func get(_: String, toFile _: String) async throws {}
+    func put(_: String, content _: Data) async throws {}
+    func put(_: String, fromFile _: String) async throws {}
+    func delete(_: String) async throws {}
+    func pathFor(_: String) -> String? { return nil }
+}
+
+struct DeploymentUtilTests {
+    private let now = date("2026-10-14 09:30")
+    private let twoWeeks: [String: Any] = ["start": date("2026-10-12 00:00"), "end": date("2026-10-24 00:00")]
+
+    private func pkginfo(_ name: String, _ version: String, _ deployment: Any?, catalogs: [String] = ["production"]) -> PlistDict {
+        var pkginfo: PlistDict = ["name": name, "version": version, "catalogs": catalogs]
+        pkginfo["deployment"] = deployment
+        return pkginfo
+    }
+
+    private func row(_ deployment: Any?, serial: String? = nil, name: String = "Firefox") throws -> DeploymentRow {
+        return try #require(deploymentRow(pkginfo(name, "131.0", deployment), now: now, serial: serial))
+    }
+
+    @Test func noDeploymentHasNoRow() {
+        #expect(deploymentRow(pkginfo("Firefox", "1.0", nil), now: now) == nil)
+    }
+
+    @Test func inProgressRowMatchesTheDesign() throws {
+        let found = try row(twoWeeks)
+        #expect(found.mode == "start/end")
+        #expect(found.step == 58)
+        #expect(found.totalSteps == 241)
+        #expect(found.currentPercent == 25)
+        #expect(found.nextStepDate == date("2026-10-14 10:00"))
+        #expect(found.status == "in progress")
+    }
+
+    @Test func statuses() throws {
+        #expect(try row(["start": date("2099-01-05 00:00"), "end": date("2099-01-09 00:00")]).status == "scheduled")
+        #expect(try row(["start": date("2099-01-05 00:00"), "percent": 5]).status == "scheduled")
+        #expect(try row(["percent": 25]).status == "static")
+        #expect(try row(["percent": 100]).status == "complete")
+        #expect(try row(["start": date("2026-10-12 00:00"), "end": date("2026-10-13 00:00")]).status == "complete")
+        #expect(try row(["percent": 0]).status == "invalid")
+    }
+
+    @Test func modes() throws {
+        let start = date("2026-10-12 00:00")
+        #expect(try row(twoWeeks).mode == "start/end")
+        #expect(try row(["start": start, "percent_per_hour": 10]).mode == "per hour")
+        #expect(try row(["start": start, "percent_per_day": 10]).mode == "per day")
+        #expect(try row(["start": start, "percent_per_step": 10, "step_hours": 24]).mode == "per step")
+        #expect(try row(["percent": 10]).mode == "static")
+    }
+
+    @Test func invalidRowSaysWhy() throws {
+        let found = try row(["percent": 0])
+        #expect(found.invalidReason?.contains("percent") == true)
+        #expect(deploymentTable([found]).contains("invalid: deployment percent"))
+    }
+
+    @Test func serialWorksOutTheMachine() throws {
+        // C02ABC123DEF hashes to 36 for Firefox and 73 for Zoom
+        let firefox = try row(["percent": 36], serial: testSerial)
+        #expect(firefox.packagePercent == 36)
+        #expect(firefox.eligible == true)
+        let zoom = try row(["percent": 36], serial: testSerial, name: "Zoom")
+        #expect(zoom.packagePercent == 73)
+        #expect(zoom.eligible == false)
+        #expect(try row(["percent": 36]).packagePercent == nil)
+    }
+
+    @Test func finishedAreHiddenUnlessAskedFor() throws {
+        let rows = [try row(["percent": 100]), try row(twoWeeks), try row(["percent": 0])]
+        #expect(filteredDeploymentRows(rows).map(\.status) == ["in progress", "invalid"])
+        #expect(filteredDeploymentRows(rows, all: true).count == 3)
+    }
+
+    @Test func catalogFilter() {
+        let rows = [
+            deploymentRow(pkginfo("A", "1.0", ["percent": 5], catalogs: ["testing"]), now: now)!,
+            deploymentRow(pkginfo("B", "1.0", ["percent": 5], catalogs: ["production", "testing"]), now: now)!,
+        ]
+        #expect(filteredDeploymentRows(rows, catalog: "production").map(\.name) == ["B"])
+        #expect(filteredDeploymentRows(rows, catalog: "testing").map(\.name) == ["A", "B"])
+    }
+
+    @Test func nameFilterIncludesFinishedVersionsNewestFirst() {
+        let rows = [
+            deploymentRow(pkginfo("A", "1.0", ["percent": 100]), now: now)!,
+            deploymentRow(pkginfo("A", "10.0", ["percent": 5]), now: now)!,
+            deploymentRow(pkginfo("A", "2.0", ["percent": 5]), now: now)!,
+            deploymentRow(pkginfo("B", "1.0", ["percent": 5]), now: now)!,
+        ]
+        #expect(filteredDeploymentRows(rows, name: "A").map(\.version) == ["10.0", "2.0", "1.0"])
+    }
+
+    @Test func tableMatchesTheDesign() throws {
+        let table = deploymentTable([try row(twoWeeks)])
+        let lines = table.components(separatedBy: "\n")
+        #expect(lines[0].hasPrefix("NAME"))
+        #expect(lines[0].hasSuffix("STATUS"))
+        let columns = lines[1].components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(columns == ["Firefox", "131.0", "start/end", "2026-10-12 00:00", "2026-10-24 00:00", "58/241", "25", "2026-10-14 10:00", "in progress"])
+    }
+
+    @Test func scheduledAndStaticShowDashes() throws {
+        let table = deploymentTable([try row(["percent": 25])])
+        let columns = table.components(separatedBy: "\n")[1].components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(columns == ["Firefox", "131.0", "static", "-", "-", "-", "25", "-", "static"])
+    }
+
+    @Test func scheduledRowShowsNoStepYet() throws {
+        let table = deploymentTable([try row(["start": date("2099-01-05 00:00"), "end": date("2099-01-09 00:00")])])
+        let columns = table.components(separatedBy: "\n")[1].components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(columns == ["Firefox", "131.0", "start/end", "2099-01-05 00:00", "2099-01-09 00:00", "-", "0", "2099-01-05 00:00", "scheduled"])
+    }
+
+    @Test func tableHeader() throws {
+        let header = deploymentTable([try row(["percent": 5])]).components(separatedBy: "\n")[0]
+        let columns = header.components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(columns == ["NAME", "VERSION", "MODE", "START", "END", "STEP", "CURRENT", "NEXT STEP", "STATUS"])
+    }
+
+    /// Names aren't cut off or misaligned, whatever characters they're made of.
+    @Test func tablePadsNamesWithAnyCharacters() throws {
+        let rows = [
+            try row(["percent": 5], name: "Cafe\u{301}"),
+            try row(["percent": 5], name: "App🎉"),
+            try row(["percent": 5], name: "Plain"),
+        ]
+        let table = deploymentTable(rows)
+        #expect(table.contains("Cafe\u{301}"))
+        #expect(table.contains("App🎉"))
+        let versionColumns = table.components(separatedBy: "\n").dropFirst().map { line in
+            line.distance(from: line.startIndex, to: line.range(of: "131.0")!.lowerBound)
+        }
+        #expect(Set(versionColumns).count == 1)
+    }
+
+    @Test func invalidIsNotEligibleForAnySerial() throws {
+        let found = try row(["percent": 0], serial: testSerial)
+        #expect(found.packagePercent == 36)
+        #expect(found.eligible == false)
+        #expect(deploymentTable([found], showMachine: true).contains("no"))
+    }
+
+    @Test func tableWithSerialAddsMachineColumns() throws {
+        let table = deploymentTable([try row(["percent": 36], serial: testSerial)], showMachine: true)
+        #expect(table.contains("PACKAGE DEPLOY %"))
+        #expect(table.contains("ELIGIBLE"))
+        #expect(table.contains("yes"))
+    }
+
+    @Test func scheduleListsEveryStep() throws {
+        let found = try row(["start": date("2026-10-20 08:00"), "end": date("2026-10-20 17:00"), "step_hours": 2])
+        #expect(found.schedule.map(\.percent) == [17, 34, 50, 67, 84, 100])
+        #expect(found.schedule.last?.date == date("2026-10-20 17:00"))
+        let text = deploymentScheduleText([found])
+        #expect(text.contains("2026-10-20 08:00  17"))
+        #expect(text.contains("2026-10-20 17:00  100"))
+    }
+
+    @Test func scheduleOfAStaticDeploymentHasNoSteps() throws {
+        #expect(deploymentScheduleText([try row(["percent": 25])]).contains("25% (no steps)"))
+    }
+
+    @Test func scheduleOfAStaticDeploymentWithStartHasOneStep() throws {
+        let found = try row(["start": date("2099-01-05 00:00"), "percent": 5])
+        #expect(found.schedule.map(\.percent) == [5])
+        #expect(deploymentScheduleText([found]).contains("2099-01-05 00:00  5"))
+        #expect(!deploymentScheduleText([found]).contains("no steps"))
+    }
+
+    @Test func jsonParsesWithExpectedValues() throws {
+        let text = try deploymentJSON([try row(twoWeeks), try row(["percent": 0])])
+        let objects = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]])
+        #expect(objects.count == 2)
+        #expect(objects[0]["name"] as? String == "Firefox")
+        #expect(objects[0]["current_deploy_percent"] as? Int == 25)
+        #expect(objects[0]["step"] as? Int == 58)
+        #expect(objects[0]["next_step_date"] as? String == "2026-10-14T10:00:00Z")
+        #expect(objects[0]["schedule"] == nil)
+        #expect(objects[0]["mode"] as? String == "start/end")
+        #expect(objects[0]["start"] as? String == "2026-10-12T00:00:00Z")
+        #expect(objects[0]["end"] as? String == "2026-10-24T00:00:00Z")
+        #expect(objects[0]["total_steps"] as? Int == 241)
+        #expect(objects[0]["catalogs"] as? [String] == ["production"])
+        #expect(objects[1]["status"] as? String == "invalid")
+        #expect(objects[1]["invalid_reason"] is String)
+    }
+
+    @Test func jsonIncludesTheMachineWithASerial() throws {
+        let text = try deploymentJSON([try row(["percent": 36], serial: testSerial)])
+        let objects = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]])
+        #expect(objects[0]["package_deploy_percent"] as? Int == 36)
+        #expect(objects[0]["eligible"] as? Bool == true)
+    }
+
+    @Test func jsonCanIncludeTheSchedule() throws {
+        let text = try deploymentJSON([try row(["start": date("2026-10-20 08:00"), "percent_per_hour": 50])], includeSchedule: true)
+        let objects = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]])
+        let schedule = try #require(objects[0]["schedule"] as? [[String: Any]])
+        #expect(schedule.map { $0["percent"] as? Int } == [50, 100])
+    }
+
+    @Test func readsPkginfosAndReportsOnesItCant() async throws {
+        let repo = try MemoryRepo("")
+        repo.files["pkgsinfo/good"] = try PropertyListSerialization.data(fromPropertyList: pkginfo("A", "1.0", ["percent": 5]), format: .xml, options: 0)
+        repo.files["pkgsinfo/sub/plain"] = try PropertyListSerialization.data(fromPropertyList: pkginfo("B", "1.0", nil), format: .xml, options: 0)
+        repo.files["pkgsinfo/bad"] = Data("not a plist".utf8)
+        repo.files["catalogs/all"] = Data()
+        let (pkginfos, errors) = try await pkginfosFromRepo(repo)
+        #expect(pkginfos.count == 2)
+        #expect(errors.count == 1)
+        #expect(errors.first?.contains("pkgsinfo/bad") == true)
+    }
+}
