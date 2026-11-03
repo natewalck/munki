@@ -102,6 +102,7 @@ let package = Package(
                 "shared/utils/stringutils.swift",
                 "shared/utils/dictutils.swift",
                 "shared/munkihash.swift",
+                "shared/deployment.swift",
                 "shared/version.swift",
                 "shared/constants.swift",
                 "shared/errors.swift",

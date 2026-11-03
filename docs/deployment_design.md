@@ -17,13 +17,19 @@ Everything lives under one `deployment` dict. The keys present decide the mode.
 | Start/end (default) | `start`, `end` | Grows in steps from `start` to 100% at exactly `end` (see section 2). |
 | Percent per hour | `start`, `percent_per_hour` | Grows by `percent_per_hour` per weekday hour, starting at `start`. With 10, that's 10 at `start`, 20 an hour later, … 100 nine hours after `start`. |
 | Percent per day | `start`, `percent_per_day` | Same as percent per hour at a rate of `percent_per_day / 24`. With 20, it reaches 100 in about 5 weekdays. |
-| Static | `percent` | fixed current_deploy_percent, no dates; the admin raises it by hand |
+| Percent per step | `start`, `percent_per_step`, `step_hours` | Grows by `percent_per_step` every `step_hours` weekday hours, starting at `start`. With 10 and `step_hours` 24, that's 10 at `start`, 20 a weekday later, … 100 nine weekdays after `start`. |
+| Static | `percent`, optional `start` | fixed current_deploy_percent; the admin raises it by hand. With `start`, it's 0 until `start`, then `percent`. |
 
-**`step_hours` (optional, dated modes only):** how many weekday hours each step lasts. It defaults to 1, so the value ticks up every hour. With 24, it ticks up once a day. It must be an `<integer>` of 1 or more. On a static `percent` it has nothing to step, so the client ignores it and `makecatalogs` warns. It changes how often the value updates, not how long the deployment takes.
+**`step_hours`:** how many weekday hours each step lasts. It must be an `<integer>` of 1 or more.
 
-**The modes are mutually exclusive.** `end`, `percent_per_hour`, `percent_per_day`, and `percent` can't be combined. A `deployment` with more than one of them is invalid, and the admin tools reject or flag it (see section 5).
+- **Start/end:** optional, and defaults to 1, so the value ticks up every hour. With 24, it ticks up once a day. It changes how often the value updates, not when the deployment finishes.
+- **Percent per step:** required.
+- **Percent per hour and percent per day:** not allowed, even with a value of 1. Those modes always step hourly, and their rate already says how fast to go. To update less often, use percent per step.
+- **Static:** it has nothing to step, so the client ignores it and `makecatalogs` warns.
 
-**Invalid deployments fail closed.** If a `deployment` is malformed (more than one mode, no mode, a dated mode missing `start`, an `end` at or before `start`, bad dates, a percent or rate outside 1–100, or a `step_hours` that isn't an `<integer>` of 1 or more), the client holds that version back on every machine and logs an error, rather than letting it go out to everyone.
+**The modes are mutually exclusive.** `end`, `percent_per_hour`, `percent_per_day`, `percent_per_step`, and `percent` can't be combined. A `deployment` with more than one of them is invalid, and the admin tools reject or flag it (see section 5).
+
+**Invalid deployments fail closed.** If a `deployment` is malformed (more than one mode, no mode, a dated mode missing `start`, an `end` at or before `start` (including a schedule with no weekday time between them, see section 2), bad dates, a percent or rate outside 1–100, a `step_hours` that isn't an `<integer>` of 1 or more, a `step_hours` on percent per hour or percent per day, or a `percent_per_step` without `step_hours`), no machine is eligible for that version and the client logs an error, rather than letting it go out to everyone.
 
 ### Strategies
 
@@ -84,7 +90,7 @@ Every dated deployment is a ramp, so rollout speed comes from the dates, rates, 
 <dict>
     <key>start</key>
     <date>2026-10-12T00:00:00Z</date>
-    <key>percent_per_day</key>
+    <key>percent_per_step</key>
     <integer>10</integer>
     <key>step_hours</key>
     <integer>24</integer>
@@ -113,19 +119,32 @@ Every dated deployment is a ramp, so rollout speed comes from the dates, rates, 
 </dict>
 ```
 
+**Canary on a set date:** the same, but nothing until Thu 2026-11-05, then 5%.
+
+```xml
+<key>deployment</key>
+<dict>
+    <key>start</key>
+    <date>2026-11-05T00:00:00Z</date>
+    <key>percent</key>
+    <integer>5</integer>
+</dict>
+```
+
 ## 2. Schedule rules
 
 - **Local Time:** dates are read the same way as `force_install_after_date` (via `subtractTZOffsetFromDate`), so `12:00:00Z` means noon local time on each machine.
 - **Before start:** current_deploy_percent is 0, so no machine is eligible.
-- **Steps:** a step opens at `start`, then every `step_hours` weekday hours on the hour, and at `end`. With N steps, step i sets current_deploy_percent to `ceil(100 × i / N)`. The first machines are eligible right at `start`, and the deployment reaches 100% exactly at `end`, even if the last step is shorter than `step_hours`.
+- **Steps:** a step opens at `start`, then every `step_hours` weekday hours on the hour, and at `end`. With N steps, step i sets current_deploy_percent to `ceil(100 × i / N)`, capped at 99 until the last step. The first machines are eligible right at `start`, and the deployment reaches 100% exactly at `end`, even if the last step is shorter than `step_hours`.
 - **Partial hours:** a start or end that isn't on the hour is still its own step. 08:30 → 17:00 opens steps at 8:30, 9:00, … 17:00 (10 steps). With `step_hours` 2, it opens steps at 8:30, 10:00, 12:00, 14:00, 16:00, and 17:00 (6 steps).
 - **`step_hours` examples:** 08:00 → 17:00 with `step_hours` 2 opens steps at 8:00, 10:00, 12:00, 14:00, 16:00, and 17:00, so current_deploy_percent runs 17, 34, 50, 67, 84, 100.
-- **Rate modes:** `percent_per_hour` and `percent_per_day` have no `end`. Each step adds `rate × step_hours`, where rate is `percent_per_hour`, or `percent_per_day / 24`, so step i sets current_deploy_percent to `min(100, ceil(i × rate × step_hours))`. `percent_per_day` 20 with `step_hours` 24 gives 20, 40, 60, 80, 100 on five consecutive weekdays.
+- **Rate modes:** `percent_per_hour`, `percent_per_day`, and `percent_per_step` have no `end`. Each step adds its whole amount the moment it opens: `percent_per_hour`, `percent_per_day / 24`, or `percent_per_step`. So step i sets current_deploy_percent to `min(100, ceil(i × amount))`. `percent_per_step` 20 with `step_hours` 24 gives 20, 40, 60, 80, 100 on five consecutive weekdays.
 - **Rounding:** each step rounds up to the next whole number. For example, 17 steps gives 6, 12, 18, … 100.
 - **Weekends:**
   - Weekend hours aren't counted. No step opens on Saturday or Sunday (except a weekend `end`, below), so current_deploy_percent holds its Friday 23:00 value until Monday 00:00.
   - A weekend start behaves like Monday 00:00.
   - A weekend end is moved back to Saturday 00:00, so the deployment finishes at the end of Friday.
+  - A schedule with no weekday time between its start and end (e.g. start Saturday, end Sunday) is invalid, because after these moves its end is no longer after its start.
 - **Once at 100:** current_deploy_percent stays at 100 permanently.
 
 ## 3. Machine deploy_percent
@@ -141,7 +160,7 @@ Every machine has two kinds of deploy_percent. Both are a number from 1 to 100, 
 - **Identifier:** the serial number, falling back to `hardware_uuid` if there's no serial. If neither can be read (and no `DeployPercentOverride` pref is set), both values are set to 100, so the machine is in the last group and gets each version once a deployment reaches 100%.
 - **Hash:** SHA-256, so the result is stable across Munki versions.
 - **Why salt per item:** each item gets a different first group of machines, so the same machines don't get every new release first. The unsalted value gives admins one stable number per machine for predicates and reporting.
-- **Required packages follow the package that requires them:** when the machine is eligible for a gated version of Package A, the Package B version it requires installs even if Package B's own deployment would hold it back. In every other case, including an older ungated Package A or Package B installed on its own, Package B follows its own deployment, hashed with its own name.
+- **Required packages follow the package that requires them:** when the machine is eligible for a gated version of Package A, the Package B version it requires installs even if the machine isn't eligible under Package B's own deployment. In every other case, including an older ungated Package A or Package B installed on its own, Package B follows its own deployment, hashed with its own name.
 - **`update_for` items don't follow:** the rule above only applies to `requires`. An `update_for` item always follows its own deployment, hashed with its own name.
 - **`DeployPercentOverride` pref** (in ManagedInstalls): replaces both values. The machine uses the pinned number for every item, with no per-item hashing. Admins can use it to decide who goes first, who goes last, or both:
   - **Go first:** a low number (e.g. 1) puts a machine at the front of every deployment, such as IT staff or testers who should catch problems early.
@@ -161,7 +180,7 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 
 - **Eligible for the newest version:** the machine installs the newest version directly, the same as if it had no `deployment`. It never installs an older version first.
 - **Not eligible yet, an older eligible version exists:** the machine installs the older version now. Once it becomes eligible for the new version, it sees that as a normal update.
-- **Not eligible yet, no older version exists** (the item's first release has a `deployment`): nothing is installed. The item is logged as held back and installs once the machine becomes eligible.
+- **Not eligible yet, no older version exists** (the item's first release has a `deployment`): nothing is installed. The item is logged as not eligible and installs once the machine becomes eligible.
 
 ### Existing installs (`managed_installs` / `managed_updates`, item already installed)
 
@@ -178,7 +197,7 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 
 ### Other interactions
 
-- **Existing conditions are checked first:** a version must pass every existing check (`minimum_munki_version`, `minimum_os_version` / `maximum_os_version`, `supported_architectures`, and `installable_condition`) before its `deployment` is evaluated. If any of them fails, the deployment is never evaluated: Munki moves on to the next-highest version, nothing is logged as held back, and no `Deployments` report entry is written. This lets admins stop an install with a condition unrelated to the deployment, and means a deployment hold always means "this machine could install it, it's just not its turn yet."
+- **Existing conditions are checked first:** a version must pass every existing check (`minimum_munki_version`, `minimum_os_version` / `maximum_os_version`, `supported_architectures`, and `installable_condition`) before its `deployment` is evaluated. If any of them fails, the deployment is never evaluated: Munki moves on to the next-highest version, nothing is logged as not eligible, and no `Deployments` report entry is written. This lets admins stop an install with a condition unrelated to the deployment, and means "not eligible" always means "this machine could install it, it's just not its turn yet."
 - **`managed_uninstalls`:** not affected. Removals are never gated.
 - **`force_install_after_date` on a gated version:** only applies once the machine is eligible. If the date has already passed by then, the install is forced right away.
 - **Required packages:** see "Required packages follow the package that requires them" in section 3.
@@ -186,9 +205,9 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 ### Predicates, logging, and reporting
 
 - **Predicates:** a `deploy_percent` fact is available in `conditional_items` and `installable_condition`. It holds the machine (unsalted) deploy_percent, or the pref if one is set. It's added in `generatePredicateInfo()` alongside the other computed conditions (e.g. `machine_type`), so it's recorded in the report's existing `Conditions` dict and nowhere else.
-- **Logging:** each held-back version is logged at info level, e.g. `Firefox 131.0 held back: package_deploy_percent 42 > current_deploy_percent 25 (next step 2026-10-14 10:00)`. A deployment holding a version back is the feature working as intended, so it's never logged as a warning or error:
+- **Logging:** each version the machine isn't eligible for is logged at info level, e.g. `Firefox 131.0 not eligible: package_deploy_percent 42 > current_deploy_percent 25 (next step 2026-10-14 10:00)`. A machine not being eligible for a version is the feature working as intended, so it's never logged as a warning or error:
   - When an older version is available, the fallback happens without any warning (Munki already only logs rejected versions at debug level when it finds one that works).
-  - When no version is available (e.g. the item's first release is gated), the usual "Could not process item … No pkginfo found in catalogs" warning is suppressed if deployment holds are the only reason. The info-level held-back line is logged instead. If anything else also rejected a version (e.g. `minimum_os_version`), the existing warnings are logged as they are today.
+  - When no version is available (e.g. the item's first release is gated), the usual "Could not process item … No pkginfo found in catalogs" warning is suppressed if not being eligible under a deployment is the only reason. The info-level not-eligible line is logged instead. If anything else also rejected a version (e.g. `minimum_os_version`), the existing warnings are logged as they are today.
   - Only an invalid `deployment` is logged as an error, since that's a real misconfiguration.
 - **Overrides are logged:** when the `DeployPercentOverride` pref or `--deploy-percent` is in effect, each run logs it once at info level, e.g. `deploy_percent overridden to 1 by DeployPercentOverride preference`.
 - **ManagedInstallReport** gets two new top-level keys:
@@ -202,7 +221,7 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
     | `package_deploy_percent` | integer | this machine's salted deploy_percent for this package |
     | `current_deploy_percent` | integer | the deployment's value right now |
     | `eligible` | boolean | `package_deploy_percent` ≤ `current_deploy_percent`, or `true` when `required_by` is set |
-    | `next_step_date` | date | when current_deploy_percent next increases (absent for `static` deployments and once at 100) |
+    | `next_step_date` | date | when current_deploy_percent next increases (absent for `static` deployments once started, and once at 100) |
     | `required_by` | string | name of the eligible gated package that required this one, when that let it bypass its own deployment (absent otherwise) |
 
 ## 5. Admin tooling
@@ -231,8 +250,9 @@ Each flag sets one key in the pkginfo's `deployment` dict:
 | `--deployment-end <date>` | `end` (start/end mode) | yes |
 | `--deployment-percent-per-hour <n>` | `percent_per_hour` | yes |
 | `--deployment-percent-per-day <n>` | `percent_per_day` | yes |
-| `--deployment-percent <n>` | `percent` (static mode) | no |
-| `--deployment-step-hours <n>` | `step_hours` (dated modes only) | yes |
+| `--deployment-percent-per-step <n>` | `percent_per_step` (also needs `--deployment-step-hours`) | yes |
+| `--deployment-percent <n>` | `percent` (static mode) | optional |
+| `--deployment-step-hours <n>` | `step_hours` (start/end and percent per step only) | yes |
 
 Dates take a date and time, or a date alone. A date-only `--deployment-start` means 00:00 that day. A date-only `--deployment-end` means the end of that day, so `--deployment-end 2026-10-23` is written as `2026-10-24T00:00:00Z`.
 
@@ -242,7 +262,7 @@ Pick one mode per pkginfo. If the flags would create an invalid `deployment` (tw
 
 `makecatalogs` prints a warning for each pkginfo whose `deployment` has a problem. It still builds the catalogs, so the admin sees the warning but the repo isn't blocked. Warnings:
 
-- **Invalid (held back on every machine):** more than one mode, no mode (e.g. only `start`), a dated mode without `start`, an end at or before the start, a `percent` / `percent_per_hour` / `percent_per_day` outside 1–100, or a `step_hours` that isn't an `<integer>` of 1 or more.
+- **Invalid (no machine is eligible):** more than one mode, no mode (e.g. only `start`), a dated mode without `start`, an end at or before the start (including a schedule with no weekday time between them), a `percent` / `percent_per_hour` / `percent_per_day` / `percent_per_step` outside 1–100, a `step_hours` that isn't an `<integer>` of 1 or more, a `step_hours` on percent per hour or percent per day, or a `percent_per_step` without `step_hours`.
 - **Valid, but probably not what was meant:**
   - A start or end date on a weekend. The client moves a weekend start to Monday 00:00 and a weekend end to Saturday 00:00 (the end of Friday).
   - A `step_hours` on a static `percent`. The client ignores it.
@@ -279,7 +299,7 @@ By default it only shows deployments that still need attention: `scheduled`, `in
 
 | Status | Meaning |
 |---|---|
-| `scheduled` | the start date hasn't arrived yet |
+| `scheduled` | the start date hasn't arrived yet, including a `percent` deployment with a `start` |
 | `in progress` | started, below 100 |
 | `static` | a `percent` deployment below 100 |
 | `complete` | at 100, including a `static` deployment set to 100 |

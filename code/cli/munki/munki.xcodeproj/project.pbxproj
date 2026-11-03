@@ -298,6 +298,7 @@
 		C0684E792DC7BF2F0091E774 /* prefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07A6FAF2C2B22A400090743 /* prefs.swift */; };
 		C0684E7A2DC7BF590091E774 /* scriptutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D9C2A22C61939E0019A067 /* scriptutils.swift */; };
 		C0684E7B2DC7BF720091E774 /* munkihash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C030A98E2C39C135007F0B34 /* munkihash.swift */; };
+		D3E1A0022F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
 		C0684E7C2DC7BFAD0091E774 /* appinventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07AED622C66CFBD00DE6119 /* appinventory.swift */; };
 		C0684E7D2DC7C3710091E774 /* installationstate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01792E42C73FFD4008CBC22 /* installationstate.swift */; };
 		C0684E7E2DC7C3850091E774 /* osutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07074E42C34910F00B86310 /* osutils.swift */; };
@@ -444,6 +445,7 @@
 		C0AD963E2F3E58D80029A293 /* TestingResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD96272F3E58D80029A293 /* TestingResources.swift */; };
 		C0AD963F2F3E58D80029A293 /* urlsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD96282F3E58D80029A293 /* urlsTests.swift */; };
 		C0AD96402F3E58D80029A293 /* versionutilsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD96292F3E58D80029A293 /* versionutilsTests.swift */; };
+		D3E1A0042F90000000DE0001 /* deploymentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0032F90000000DE0001 /* deploymentTests.swift */; };
 		C0AD96412F3E58D80029A293 /* xattrTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD962A2F3E58D80029A293 /* xattrTests.swift */; };
 		C0AD96452F3E58F90029A293 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD96422F3E58F90029A293 /* main.swift */; };
 		C0AD96482F3E590E0029A293 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AD96462F3E590E0029A293 /* main.swift */; };
@@ -776,6 +778,7 @@
 		C0209B912C63E3B7007664A0 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C0276DB12E8C070500D443C3 /* repocheck */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = repocheck; sourceTree = BUILT_PRODUCTS_DIR; };
 		C030A98E2C39C135007F0B34 /* munkihash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = munkihash.swift; sourceTree = "<group>"; };
+		D3E1A0012F90000000DE0001 /* deployment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = deployment.swift; sourceTree = "<group>"; };
 		C030A9952C3A2E18007F0B34 /* makepkginfo */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = makepkginfo; sourceTree = BUILT_PRODUCTS_DIR; };
 		C030A9972C3A2E18007F0B34 /* makepkginfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = makepkginfo.swift; sourceTree = "<group>"; };
 		C030A99E2C3B4F04007F0B34 /* pkginfoOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pkginfoOptions.swift; sourceTree = "<group>"; };
@@ -877,6 +880,7 @@
 		C0AD96272F3E58D80029A293 /* TestingResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestingResources.swift; sourceTree = "<group>"; };
 		C0AD96282F3E58D80029A293 /* urlsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = urlsTests.swift; sourceTree = "<group>"; };
 		C0AD96292F3E58D80029A293 /* versionutilsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = versionutilsTests.swift; sourceTree = "<group>"; };
+		D3E1A0032F90000000DE0001 /* deploymentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = deploymentTests.swift; sourceTree = "<group>"; };
 		C0AD962A2F3E58D80029A293 /* xattrTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = xattrTests.swift; sourceTree = "<group>"; };
 		C0AD96422F3E58F90029A293 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C0AD96432F3E58F90029A293 /* precache_agent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = precache_agent.entitlements; sourceTree = "<group>"; };
@@ -1273,6 +1277,7 @@
 				C008A0502D18BB780073ADBA /* launchd.swift */,
 				C0D9C2562C5D391C0019A067 /* LaunchdJob.swift */,
 				C030A98E2C39C135007F0B34 /* munkihash.swift */,
+				D3E1A0012F90000000DE0001 /* deployment.swift */,
 				C07074DB2C33AE5F00B86310 /* munkilog.swift */,
 				C01364472C2F8EC0008DB215 /* munkirepo */,
 				C0D9C2A52C62C12E0019A067 /* munkistatus.swift */,
@@ -1433,6 +1438,7 @@
 				C0AD96272F3E58D80029A293 /* TestingResources.swift */,
 				C0AD96282F3E58D80029A293 /* urlsTests.swift */,
 				C0AD96292F3E58D80029A293 /* versionutilsTests.swift */,
+				D3E1A0032F90000000DE0001 /* deploymentTests.swift */,
 				C0AD962A2F3E58D80029A293 /* xattrTests.swift */,
 				C0AD96172F3E58D80029A293 /* fixtures */,
 				C05ED2822FDB5CBB00AFA64D /* dictutilsTests.swift */,
@@ -2247,6 +2253,7 @@
 				C0AD963E2F3E58D80029A293 /* TestingResources.swift in Sources */,
 				C0AD963F2F3E58D80029A293 /* urlsTests.swift in Sources */,
 				C0AD96402F3E58D80029A293 /* versionutilsTests.swift in Sources */,
+				D3E1A0042F90000000DE0001 /* deploymentTests.swift in Sources */,
 				C0AD96412F3E58D80029A293 /* xattrTests.swift in Sources */,
 				C0684E6E2DC73C590091E774 /* stderrout.swift in Sources */,
 				C0684E8D2DC7E2AB0091E774 /* version.swift in Sources */,
@@ -2273,6 +2280,7 @@
 				C0684E8F2DC7E2F90091E774 /* installinfo.swift in Sources */,
 				C0684E7E2DC7C3850091E774 /* osutils.swift in Sources */,
 				C0684E7B2DC7BF720091E774 /* munkihash.swift in Sources */,
+				D3E1A0022F90000000DE0001 /* deployment.swift in Sources */,
 				C0684E7A2DC7BF590091E774 /* scriptutils.swift in Sources */,
 				C058EF2B2DCD11F2002775E0 /* tempfileutils.swift in Sources */,
 				C0684E722DC7BE690091E774 /* compare.swift in Sources */,
