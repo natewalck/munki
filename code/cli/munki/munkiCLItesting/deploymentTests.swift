@@ -729,672 +729,878 @@ private func entry(_ installInfo: PlistDict, _ name: String) -> PlistDict? {
     return entries.first
 }
 
-/// All of these share singletons, so they can't run at the same time.
-@Suite(.serialized) struct DeploymentClientTests {
-    // MARK: catalog lookup
+/// All of these share singletons, so they can't run at the same time. Some also write errors and
+/// warnings to Report.shared, which isn't thread-safe and which manifestsTests writes to as well,
+/// so they're nested in that serialized suite rather than changing Report for the sake of tests.
+extension manifestsTests {
+    @Suite struct DeploymentClientTests {
+        // MARK: catalog lookup
 
-    @Test func eligibleAtOrBelowTheCurrentPercent() async {
-        seedCatalog([item("Firefox", "2.0", percent: 36), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "2.0")
+        @Test func eligibleAtOrBelowTheCurrentPercent() async {
+            seedCatalog([item("Firefox", "2.0", percent: 36), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "2.0")
 
-        seedCatalog([item("Firefox", "2.0", percent: 35), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "1.0")
-    }
-
-    @Test func fallsBackToNextHighestEligibleVersion() async {
-        seedCatalog([item("Firefox", "3.0", percent: 1), item("Firefox", "2.0", percent: 50), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "2.0")
-    }
-
-    @Test func noEligibleVersionIsWaitingNotAProblem() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1)])
-        #expect(await lookup("Firefox") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func aSpecificVersionHasNoFallback() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox--2.0") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func noMachineIsEligibleBeforeStart() async {
-        seedCatalog([item("Firefox", "2.0", deployment: notStarted)])
-        #expect(await lookup("Firefox") == nil)
-    }
-
-    @Test func invalidDeploymentFailsClosed() async {
-        seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0]), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "1.0")
-        seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0])])
-        #expect(await lookup("Firefox") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func waitingFollowsTheLatestLookup() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox--2.0") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-        // found a version
-        #expect(await lookup("Firefox") == "1.0")
-        #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
-
-        #expect(await lookup("Firefox--2.0") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-        // nothing found, and not because of a deployment
-        #expect(await lookup("Firefox--9.9") == nil)
-        #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func namesWithHyphensAreNotConfused() async {
-        seedCatalog([item("Foo-2", "5.0", percent: 1, path: installedPath), item("Foo", "1.0")])
-        var installInfo = PlistDict()
-        _ = await processInstall("Foo-2--5.0", catalogList: testCatalogs, installInfo: &installInfo)
-        _ = await processInstall("Foo", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(entry(installInfo, "Foo")?["version_to_install"] as? String == "1.0")
-    }
-
-    @Test func otherChecksComeFirst() async {
-        seedCatalog([
-            item("Firefox", "3.0", percent: 1, extra: ["minimum_os_version": "99.0"]),
-            item("Firefox", "2.0", percent: 1, extra: ["supported_architectures": ["x86_64"]]),
-            item("Firefox", "1.5", percent: 1, extra: ["minimum_munki_version": "99.0"]),
-            item("Firefox", "1.0"),
-        ])
-        #expect(await lookup("Firefox") == "1.0")
-        #expect(DeploymentRecords.shared.logged.isEmpty)
-    }
-
-    @Test func anotherRejectionStillCountsAsAProblem() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 1),
-            item("Firefox", "1.0", extra: ["minimum_os_version": "99.0"]),
-        ])
-        #expect(await lookup("Firefox") == nil)
-        #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func removalLookupsSkipTheCheck() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1)])
-        #expect(await lookup("Firefox", skipDeploymentCheck: true) == "2.0")
-    }
-
-    /// The "Requires macOS X" lookup: a machine that isn't eligible doesn't see the version.
-    @Test func skippingMinimumOSDoesNotSkipTheDeployment() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["minimum_os_version": "99.0"])])
-        #expect(await lookup("Firefox", skipMinimumOSCheck: true) == nil)
-
-        seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["minimum_os_version": "99.0"])])
-        #expect(await lookup("Firefox", skipMinimumOSCheck: true) == "2.0")
-    }
-
-    @Test func noIdentifierIsTheLastGroup() async {
-        seedCatalog([item("Firefox", "2.0", percent: 99), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: "")
-        #expect(await lookup("Firefox") == "1.0")
-
-        seedCatalog([item("Firefox", "2.0", percent: 100), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: "")
-        #expect(await lookup("Firefox") == "2.0")
-    }
-
-    @Test func fallsBackToHardwareUUID() async {
-        let uuid = "564D1234-ABCD-4EF0-9123-456789ABCDEF"
-        let percent = packageDeployPercent(identifier: uuid, itemName: "Firefox")
-        seedCatalog([item("Firefox", "2.0", percent: percent), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: uuid)
-        #expect(await lookup("Firefox") == "2.0")
-    }
-
-    // MARK: overrides
-
-    @Test func overridePrecedence() {
-        #expect(deployPercentOverride(commandLine: nil, preference: nil) == nil)
-        #expect(deployPercentOverride(commandLine: nil, preference: 5)?.value == 5)
-        #expect(deployPercentOverride(commandLine: nil, preference: 5)?.source == "preference")
-        #expect(deployPercentOverride(commandLine: 9, preference: 5)?.value == 9)
-        #expect(deployPercentOverride(commandLine: 9, preference: 5)?.source == "command_line")
-    }
-
-    @Test func preferenceOutOfRangeIsIgnored() {
-        for preference in [0, -1, 101] {
-            #expect(deployPercentOverride(commandLine: nil, preference: preference) == nil)
+            seedCatalog([item("Firefox", "2.0", percent: 35), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "1.0")
         }
-        #expect(deployPercentOverride(commandLine: nil, preference: 1)?.value == 1)
-        #expect(deployPercentOverride(commandLine: nil, preference: 100)?.value == 100)
-    }
 
-    @Test func overrideOneGetsEveryStartedDeployment() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
-        DeploymentRecords.shared.commandLineDeployPercent = 1
-        #expect(await lookup("Firefox") == "2.0")
-    }
-
-    @Test func overrideOneHundredSkipsAnythingBelowOneHundred() async {
-        seedCatalog([item("Firefox", "2.0", percent: 99), item("Firefox", "1.0")])
-        DeploymentRecords.shared.commandLineDeployPercent = 100
-        #expect(await lookup("Firefox") == "1.0")
-
-        seedCatalog([item("Firefox", "2.0", percent: 100), item("Firefox", "1.0")])
-        DeploymentRecords.shared.commandLineDeployPercent = 100
-        #expect(await lookup("Firefox") == "2.0")
-    }
-
-    @Test func overrideDoesNotInstallBeforeStart() async {
-        seedCatalog([item("Firefox", "2.0", deployment: notStarted), item("Firefox", "1.0")])
-        DeploymentRecords.shared.commandLineDeployPercent = 1
-        #expect(await lookup("Firefox") == "1.0")
-    }
-
-    @Test func overrideDoesNotUseTheHash() async {
-        // Firefox hashes to 36 and Zoom to 73 on this machine, but the override applies to both
-        seedCatalog([item("Firefox", "2.0", percent: 50), item("Zoom", "2.0", percent: 50)])
-        DeploymentRecords.shared.commandLineDeployPercent = 50
-        #expect(await lookup("Firefox") == "2.0")
-        #expect(await lookup("Zoom") == "2.0")
-    }
-
-    // MARK: deploy_percent fact
-
-    @Test func factIsTheUnsaltedValue() {
-        DeploymentRecords.shared.reset()
-        #expect(deployPercentFact(machine: ["serial_number": testSerial]) == 89)
-    }
-
-    @Test func factWithNoIdentifierIsTheLastGroup() {
-        DeploymentRecords.shared.reset()
-        #expect(deployPercentFact(machine: ["serial_number": "UNKNOWN", "hardware_uuid": ""]) == 100)
-    }
-
-    @Test func factUsesTheOverride() {
-        DeploymentRecords.shared.reset()
-        DeploymentRecords.shared.commandLineDeployPercent = 7
-        #expect(deployPercentFact(machine: ["serial_number": testSerial]) == 7)
-        DeploymentRecords.shared.reset()
-    }
-
-    @Test func predicateInfoIncludesTheFact() async {
-        seedCatalog([])
-        DeploymentRecords.shared.commandLineDeployPercent = 7
-        defer { DeploymentRecords.shared.reset() }
-        #expect(await generatePredicateInfo()["deploy_percent"] as? Int == 7)
-    }
-
-    @Test func installableConditionCanUseTheFact() async {
-        let condition: PlistDict = ["installable_condition": "deploy_percent <= 10"]
-        defer { PredicateInfo.shared.info = PlistDict() }
-
-        PredicateInfo.shared.info = ["deploy_percent": 5]
-        seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "2.0")
-
-        PredicateInfo.shared.info = ["deploy_percent": 50]
-        seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
-        #expect(await lookup("Firefox") == "1.0")
-    }
-
-    // MARK: report entries
-
-    private func reportEntry(_ name: String, _ version: String) -> PlistDict? {
-        return deploymentReportEntries().first {
-            $0["name"] as? String == name && $0["version"] as? String == version
+        @Test func fallsBackToNextHighestEligibleVersion() async {
+            seedCatalog([item("Firefox", "3.0", percent: 1), item("Firefox", "2.0", percent: 50), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "2.0")
         }
-    }
 
-    @Test func reportEntryForAVersionNotEligibleFor() async throws {
-        seedCatalog([
-            item("Firefox", "2.0", deployment: ["start": date("2099-01-05 00:00"), "percent_per_hour": 10]),
-            item("Firefox", "1.0"),
-        ])
-        _ = await lookup("Firefox")
-        let found = try #require(reportEntry("Firefox", "2.0"))
-        #expect(found["package_deploy_percent"] as? Int == 36)
-        #expect(found["current_deploy_percent"] as? Int == 0)
-        #expect(found["eligible"] as? Bool == false)
-        #expect(found["next_step_date"] is Date)
-        #expect(found["required_by"] == nil)
-    }
+        @Test func noEligibleVersionIsWaitingNotAProblem() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            #expect(await lookup("Firefox") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+        }
 
-    @Test func reportEntryForAnEligibleVersion() async throws {
-        seedCatalog([item("Firefox", "2.0", percent: 50)])
-        _ = await lookup("Firefox")
-        let found = try #require(reportEntry("Firefox", "2.0"))
-        #expect(found["current_deploy_percent"] as? Int == 50)
-        #expect(found["eligible"] as? Bool == true)
-        // a static deployment has no next step
-        #expect(found["next_step_date"] == nil)
-    }
+        @Test func aSpecificVersionHasNoFallback() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox--2.0") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+        }
 
-    /// With over 100 steps a step can leave the percent unchanged. This is when it next rises.
-    @Test func reportNextStepDateIsWhenThePercentNextRises() async throws {
-        seedCatalog([item("Firefox", "2.0", deployment: ["start": date("2026-10-12 00:00"), "end": date("2026-10-24 00:00")])])
-        DeploymentRecords.shared.now = subtractTZOffsetFromDate(date("2026-10-14 09:30"))
-        _ = await lookup("Firefox")
-        let found = try #require(reportEntry("Firefox", "2.0"))
-        #expect(found["current_deploy_percent"] as? Int == 25)
-        #expect(found["next_step_date"] as? Date == subtractTZOffsetFromDate(date("2026-10-14 12:00")))
-    }
+        @Test func noMachineIsEligibleBeforeStart() async {
+            seedCatalog([item("Firefox", "2.0", deployment: notStarted)])
+            #expect(await lookup("Firefox") == nil)
+        }
 
-    @Test func noReportEntryWhenInstallableConditionFailsFirst() async {
-        defer { PredicateInfo.shared.info = PlistDict() }
-        PredicateInfo.shared.info = ["deploy_percent": 50]
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["installable_condition": "deploy_percent <= 10"])])
-        _ = await lookup("Firefox")
-        #expect(deploymentReportEntries().isEmpty)
-    }
+        @Test func invalidDeploymentFailsClosed() async {
+            seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0]), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "1.0")
+            seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0])])
+            #expect(await lookup("Firefox") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+        }
 
-    @Test func reportHasOneEntryPerVersion() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0", percent: 50), item("Firefox", "0.9")])
-        _ = await lookup("Firefox")
-        _ = await lookup("Firefox")
-        // 0.9 has no deployment, so it has no entry
-        #expect(deploymentReportEntries().map { $0["version"] as? String } == ["1.0", "2.0"])
-    }
+        @Test func waitingFollowsTheLatestLookup() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox--2.0") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+            // found a version
+            #expect(await lookup("Firefox") == "1.0")
+            #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
 
-    @Test func reportEntryUsesTheOverride() async throws {
-        seedCatalog([item("Firefox", "2.0", percent: 50)])
-        DeploymentRecords.shared.commandLineDeployPercent = 7
-        _ = await lookup("Firefox")
-        #expect(try #require(reportEntry("Firefox", "2.0"))["package_deploy_percent"] as? Int == 7)
-    }
+            #expect(await lookup("Firefox--2.0") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+            // nothing found, and not because of a deployment
+            #expect(await lookup("Firefox--9.9") == nil)
+            #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
+        }
 
-    @Test func noReportEntryWhenAnotherCheckFailsFirst() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["minimum_os_version": "99.0"])])
-        _ = await lookup("Firefox")
-        #expect(deploymentReportEntries().isEmpty)
-    }
+        @Test func namesWithHyphensAreNotConfused() async {
+            seedCatalog([item("Foo-2", "5.0", percent: 1, path: installedPath), item("Foo", "1.0")])
+            var installInfo = PlistDict()
+            _ = await processInstall("Foo-2--5.0", catalogList: testCatalogs, installInfo: &installInfo)
+            _ = await processInstall("Foo", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(entry(installInfo, "Foo")?["version_to_install"] as? String == "1.0")
+        }
 
-    @Test func noReportEntryWhenTheCheckIsSkipped() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1)])
-        _ = await lookup("Firefox", skipDeploymentCheck: true)
-        #expect(deploymentReportEntries().isEmpty)
-    }
-
-    @Test func noReportEntryForAnInvalidDeployment() async {
-        seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0])])
-        _ = await lookup("Firefox")
-        #expect(deploymentReportEntries().isEmpty)
-    }
-
-    @Test func autoremoveChecksDoNotAddReportEntries() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["autoremove": true])])
-        _ = await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs)
-        #expect(deploymentReportEntries().isEmpty)
-    }
-
-    /// The report is saved as a plist, and one bad value stops it saving.
-    @Test func reportEntriesCanBeSavedAsAPlist() async throws {
-        seedCatalog([
-            item("Firefox", "2.0", deployment: ["start": date("2099-01-05 00:00"), "percent_per_hour": 10]),
-            item("Firefox", "1.0"),
-        ])
-        _ = await lookup("Firefox")
-        let plist: PlistDict = ["Deployments": deploymentReportEntries()]
-        _ = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-    }
-
-    // MARK: autoremove
-
-    private func autoRemovals() async -> [String] {
-        return await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs)
-    }
-
-    @Test func autoremoveOnAVersionNotEligibleForDoesNotCount() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["autoremove": true]), item("Firefox", "1.0")])
-        #expect(await autoRemovals() == [])
-    }
-
-    @Test func autoremoveCountsOnceEligible() async {
-        seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["autoremove": true]), item("Firefox", "1.0")])
-        #expect(await autoRemovals() == ["Firefox"])
-    }
-
-    @Test func autoremoveOnAnEligibleOlderVersionStillCounts() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 1, extra: ["autoremove": true]),
-            item("Firefox", "1.0", extra: ["autoremove": true]),
-        ])
-        #expect(await autoRemovals() == ["Firefox"])
-    }
-
-    @Test func autoremoveSkipsAnItemWaitingOnWhatItRequires() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"], "autoremove": true]),
-            item("Zoom", "2.0", deployment: notStarted),
-        ])
-        var installInfo = PlistDict()
-        _ = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(await getAutoRemovalItems(installInfo: installInfo, catalogList: testCatalogs) == [])
-    }
-
-    @Test func autoremoveDoesNotConfuseHyphenatedNames() async {
-        seedCatalog([item("Foo", "2.0", percent: 1), item("Foo-2", "1.0", extra: ["autoremove": true])])
-        _ = await lookup("Foo")
-        #expect(DeploymentRecords.shared.isWaiting("Foo"))
-        #expect(await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs) == ["Foo-2"])
-    }
-
-    @Test func autoremoveSkipsAPinnedVersionNotEligibleFor() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0", extra: ["autoremove": true])])
-        var installInfo = PlistDict()
-        _ = await processInstall("Firefox--2.0", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(await getAutoRemovalItems(installInfo: installInfo, catalogList: testCatalogs) == [])
-    }
-
-    // MARK: installs
-
-    private func install(_ name: String) async -> (Bool, PlistDict) {
-        var installInfo = PlistDict()
-        let result = await processInstall(name, catalogList: testCatalogs, installInfo: &installInfo)
-        return (result, installInfo)
-    }
-
-    @Test func eligibleInstallsNewestDirectly() async {
-        seedCatalog([item("Firefox", "2.0", percent: 36), item("Firefox", "1.0")])
-        let (result, installInfo) = await install("Firefox")
-        #expect(result)
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
-    }
-
-    @Test func notEligibleInstallsTheOlderVersion() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
-        let (result, installInfo) = await install("Firefox")
-        #expect(result)
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
-    }
-
-    @Test func noEligibleVersionInstallsNothing() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1)])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox") == nil)
-    }
-
-    @Test func aVersionWithoutADeploymentInstallsNow() async {
-        seedCatalog([item("Firefox", "1.2", percent: 1), item("Firefox", "1.1"), item("Firefox", "1.0", path: installedPath)])
-        let (_, installInfo) = await install("Firefox")
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.1")
-    }
-
-    @Test func forceInstallDateOnlyAppliesOnceEligible() async {
-        let forced: PlistDict = ["force_install_after_date": date("2020-01-06 00:00")]
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: forced), item("Firefox", "1.0")])
-        let (_, before) = await install("Firefox")
-        #expect(entry(before, "Firefox")?["force_install_after_date"] == nil)
-
-        seedCatalog([item("Firefox", "2.0", percent: 36, extra: forced), item("Firefox", "1.0")])
-        let (_, after) = await install("Firefox")
-        #expect(entry(after, "Firefox")?["force_install_after_date"] != nil)
-    }
-
-    // MARK: required packages
-
-    /// A deployment only makes a version available or not, so what's required follows its own.
-    @Test func aRequirementFollowsItsOwnDeployment() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", percent: 1),
-            item("Zoom", "1.0"),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(result)
-        #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
-    }
-
-    @Test func itemWaitsWhenMachineIsNotEligibleForWhatItRequires() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", percent: 1),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox") == nil)
-    }
-
-    /// Munki's normal checks decide, the same as a version rejected by any other check.
-    @Test func normalChecksDecideWhenANewerVersionIsNotEligible() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath), item("Firefox", "1.0", path: missingPath)])
-        let (_, installInfo) = await install("Firefox")
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
-    }
-
-    @Test func itemWithoutADeploymentDoesNotBringAnythingAlong() async {
-        seedCatalog([
-            item("Firefox", "1.0", extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", percent: 1),
-            item("Zoom", "1.0"),
-        ])
-        let (_, installInfo) = await install("Firefox")
-        #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
-    }
-
-    @Test func updateForDoesNotFollow() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36),
-            item("Zoom", "2.0", percent: 1, extra: ["update_for": ["Firefox"]]),
-            item("Zoom", "1.0", extra: ["update_for": ["Firefox"]]),
-        ])
-        let (_, installInfo) = await install("Firefox")
-        #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
-    }
-
-    @Test func itemWaitsWhenWhatItRequiresHasNotStarted() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", deployment: notStarted),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        // no entry means no problem item, and it installs once Zoom's deployment starts
-        #expect(entry(installInfo, "Firefox") == nil)
-        #expect(entry(installInfo, "Zoom") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Firefox"))
-    }
-
-    @Test func waitingCarriesUpAChain() async {
-        seedCatalog([
-            item("Top", "1.0", extra: ["requires": ["Firefox"]]),
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", deployment: notStarted),
-        ])
-        let (result, installInfo) = await install("Top")
-        #expect(!result)
-        #expect(entry(installInfo, "Top") == nil)
-        #expect(DeploymentRecords.shared.isWaiting("Top"))
-    }
-
-    @Test func itemWaitsWhenWhatItRequiresIsInvalid() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", deployment: ["percent": 0]),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox") == nil)
-    }
-
-    @Test func waitingWorksForARequirementWithAPath() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["apps/Zoom"]]),
-            item("Zoom", "2.0", deployment: notStarted),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox") == nil)
-    }
-
-    @Test func aRealDependencyProblemIsStillAProblem() async {
-        seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["requires": ["DoesNotExist"]])])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox")?["note"] != nil)
-    }
-
-    @Test func anOrdinaryPinnedRequirementStillBehavesAsBefore() async {
-        seedCatalog([
-            item("Firefox", "2.0", extra: ["requires": ["Zoom--3.0"]]),
-            item("Zoom", "1.0"),
-        ])
-        var installInfo = PlistDict()
-        _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
-        let result = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(result)
-    }
-
-    /// An admin may want Zoom 2.0 and 3.0 both installed at different paths. Pinning 2.0 means
-    /// 2.0, as it always has, whatever else is installed and whatever was looked up first.
-    @Test func aPinnedVersionInstallsAlongsideANewerOne() async {
-        let items = [
-            item("Zoom", "3.0", deployment: notStarted, path: installedPath),
-            item("Zoom", "2.0", path: missingPath),
-        ]
-        seedCatalog(items)
-        let (result, installInfo) = await install("Zoom--2.0")
-        #expect(result)
-        #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "2.0")
-
-        seedCatalog(items)
-        _ = await lookup("Zoom")
-        let (_, afterLookup) = await install("Zoom--2.0")
-        #expect(entry(afterLookup, "Zoom")?["version_to_install"] as? String == "2.0")
-    }
-
-    /// With no deployment anywhere, all of this has to match Munki's existing behavior.
-    @Test func itemsWithoutADeploymentAreUntouched() async {
-        seedCatalog([
-            item("Firefox", "2.0", extra: ["requires": ["Zoom--3.0"], "autoremove": true]),
-            item("Zoom", "2.0", path: installedPath),
-            item("Zoom", "1.0"),
-        ])
-        var installInfo = PlistDict()
-        _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
-        // existing behavior: any processed version counts as meeting a pinned requirement
-        #expect(await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo))
-        #expect(DeploymentRecords.shared.logged.isEmpty)
-        #expect(DeploymentRecords.shared.waiting.isEmpty)
-        #expect(deploymentReportEntries().isEmpty)
-        #expect(await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs) == ["Firefox"])
-    }
-
-    @Test func aWaitingAndAFailingRequirementIsStillAProblem() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom", "DoesNotExist"]]),
-            item("Zoom", "2.0", deployment: notStarted),
-        ])
-        let (result, installInfo) = await install("Firefox")
-        #expect(!result)
-        #expect(entry(installInfo, "Firefox")?["note"] != nil)
-    }
-
-    // MARK: removals
-
-    private let removable: PlistDict = [
-        "uninstallable": true, "uninstall_method": "uninstall_script", "uninstall_script": "#!/bin/sh\n",
-    ]
-
-    /// Removals are never gated, even for a version this machine isn't eligible for.
-    @Test func removingASpecificVersionIgnoresItsDeployment() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath, extra: removable)])
-        var installInfo = PlistDict()
-        _ = await processRemoval("Firefox--2.0", catalogList: testCatalogs, installInfo: &installInfo)
-        let removals = installInfo["removals"] as? [PlistDict] ?? []
-        #expect(removals.contains { $0["name"] as? String == "Firefox" })
-    }
-
-    /// Munki's existing rule: an item already processed counts as meeting an unpinned requirement,
-    /// and a deployment doesn't change the install list once it's built.
-    @Test func aRequirementLeavesAVersionProcessedEarlier() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
-            item("Zoom", "2.0", percent: 1),
-            item("Zoom", "1.0"),
-        ])
-        var installInfo = PlistDict()
-        _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo))
-        let order = (installInfo["managed_installs"] as? [PlistDict] ?? []).map { $0["version_to_install"] as? String }
-        #expect(order == ["1.0", "2.0"])
-    }
-
-    /// Munki's existing rule: any processed version counts as meeting a pinned requirement, and
-    /// the first one processed wins. A deployment on the version doesn't change that.
-    @Test func aProcessedVersionMeetsAPinnedRequirement() async {
-        for zoom3 in [item("Zoom", "3.0", percent: 1), item("Zoom", "3.0", deployment: notStarted)] {
+        @Test func otherChecksComeFirst() async {
             seedCatalog([
-                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom--3.0"]]),
-                zoom3,
+                item("Firefox", "3.0", percent: 1, extra: ["minimum_os_version": "99.0"]),
+                item("Firefox", "2.0", percent: 1, extra: ["supported_architectures": ["x86_64"]]),
+                item("Firefox", "1.5", percent: 1, extra: ["minimum_munki_version": "99.0"]),
+                item("Firefox", "1.0"),
+            ])
+            #expect(await lookup("Firefox") == "1.0")
+            #expect(DeploymentRecords.shared.logged.isEmpty)
+        }
+
+        @Test func anotherRejectionStillCountsAsAProblem() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 1),
+                item("Firefox", "1.0", extra: ["minimum_os_version": "99.0"]),
+            ])
+            #expect(await lookup("Firefox") == nil)
+            #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
+        }
+
+        @Test func removalLookupsSkipTheCheck() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            #expect(await lookup("Firefox", skipDeploymentCheck: true) == "2.0")
+        }
+
+        /// The "Requires macOS X" lookup: a machine that isn't eligible doesn't see the version.
+        @Test func skippingMinimumOSDoesNotSkipTheDeployment() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["minimum_os_version": "99.0"])])
+            #expect(await lookup("Firefox", skipMinimumOSCheck: true) == nil)
+
+            seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["minimum_os_version": "99.0"])])
+            #expect(await lookup("Firefox", skipMinimumOSCheck: true) == "2.0")
+        }
+
+        @Test func noIdentifierIsTheLastGroup() async {
+            seedCatalog([item("Firefox", "2.0", percent: 99), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: "")
+            #expect(await lookup("Firefox") == "1.0")
+
+            seedCatalog([item("Firefox", "2.0", percent: 100), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: "")
+            #expect(await lookup("Firefox") == "2.0")
+        }
+
+        @Test func fallsBackToHardwareUUID() async {
+            let uuid = "564D1234-ABCD-4EF0-9123-456789ABCDEF"
+            let percent = packageDeployPercent(identifier: uuid, itemName: "Firefox")
+            seedCatalog([item("Firefox", "2.0", percent: percent), item("Firefox", "1.0")], serial: "UNKNOWN", uuid: uuid)
+            #expect(await lookup("Firefox") == "2.0")
+        }
+
+        // MARK: overrides
+
+        @Test func overridePrecedence() {
+            #expect(deployPercentOverride(commandLine: nil, preference: nil) == nil)
+            #expect(deployPercentOverride(commandLine: nil, preference: 5)?.value == 5)
+            #expect(deployPercentOverride(commandLine: nil, preference: 5)?.source == "preference")
+            #expect(deployPercentOverride(commandLine: 9, preference: 5)?.value == 9)
+            #expect(deployPercentOverride(commandLine: 9, preference: 5)?.source == "command_line")
+        }
+
+        @Test func preferenceOutOfRangeIsIgnored() {
+            for preference in [0, -1, 101] {
+                #expect(deployPercentOverride(commandLine: nil, preference: preference) == nil)
+            }
+            #expect(deployPercentOverride(commandLine: nil, preference: 1)?.value == 1)
+            #expect(deployPercentOverride(commandLine: nil, preference: 100)?.value == 100)
+        }
+
+        @Test func overrideOneGetsEveryStartedDeployment() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
+            DeploymentRecords.shared.commandLineDeployPercent = 1
+            #expect(await lookup("Firefox") == "2.0")
+        }
+
+        @Test func overrideOneHundredSkipsAnythingBelowOneHundred() async {
+            seedCatalog([item("Firefox", "2.0", percent: 99), item("Firefox", "1.0")])
+            DeploymentRecords.shared.commandLineDeployPercent = 100
+            #expect(await lookup("Firefox") == "1.0")
+
+            seedCatalog([item("Firefox", "2.0", percent: 100), item("Firefox", "1.0")])
+            DeploymentRecords.shared.commandLineDeployPercent = 100
+            #expect(await lookup("Firefox") == "2.0")
+        }
+
+        @Test func overrideDoesNotInstallBeforeStart() async {
+            seedCatalog([item("Firefox", "2.0", deployment: notStarted), item("Firefox", "1.0")])
+            DeploymentRecords.shared.commandLineDeployPercent = 1
+            #expect(await lookup("Firefox") == "1.0")
+        }
+
+        @Test func overrideDoesNotUseTheHash() async {
+            // Firefox hashes to 36 and Zoom to 73 on this machine, but the override applies to both
+            seedCatalog([item("Firefox", "2.0", percent: 50), item("Zoom", "2.0", percent: 50)])
+            DeploymentRecords.shared.commandLineDeployPercent = 50
+            #expect(await lookup("Firefox") == "2.0")
+            #expect(await lookup("Zoom") == "2.0")
+        }
+
+        // MARK: deploy_percent fact
+
+        @Test func factIsTheUnsaltedValue() {
+            DeploymentRecords.shared.reset()
+            #expect(deployPercentFact(machine: ["serial_number": testSerial]) == 89)
+        }
+
+        @Test func factWithNoIdentifierIsTheLastGroup() {
+            DeploymentRecords.shared.reset()
+            #expect(deployPercentFact(machine: ["serial_number": "UNKNOWN", "hardware_uuid": ""]) == 100)
+        }
+
+        @Test func factUsesTheOverride() {
+            DeploymentRecords.shared.reset()
+            DeploymentRecords.shared.commandLineDeployPercent = 7
+            #expect(deployPercentFact(machine: ["serial_number": testSerial]) == 7)
+            DeploymentRecords.shared.reset()
+        }
+
+        @Test func predicateInfoIncludesTheFact() async {
+            seedCatalog([])
+            DeploymentRecords.shared.commandLineDeployPercent = 7
+            defer { DeploymentRecords.shared.reset() }
+            #expect(await generatePredicateInfo()["deploy_percent"] as? Int == 7)
+        }
+
+        @Test func installableConditionCanUseTheFact() async {
+            let condition: PlistDict = ["installable_condition": "deploy_percent <= 10"]
+            defer { PredicateInfo.shared.info = PlistDict() }
+
+            PredicateInfo.shared.info = ["deploy_percent": 5]
+            seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "2.0")
+
+            PredicateInfo.shared.info = ["deploy_percent": 50]
+            seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
+            #expect(await lookup("Firefox") == "1.0")
+        }
+
+        // MARK: report entries
+
+        private func reportEntry(_ name: String, _ version: String) -> PlistDict? {
+            return deploymentReportEntries().first {
+                $0["name"] as? String == name && $0["version"] as? String == version
+            }
+        }
+
+        @Test func reportEntryForAVersionNotEligibleFor() async throws {
+            seedCatalog([
+                item("Firefox", "2.0", deployment: ["start": date("2099-01-05 00:00"), "percent_per_hour": 10]),
+                item("Firefox", "1.0"),
+            ])
+            _ = await lookup("Firefox")
+            let found = try #require(reportEntry("Firefox", "2.0"))
+            #expect(found["package_deploy_percent"] as? Int == 36)
+            #expect(found["current_deploy_percent"] as? Int == 0)
+            #expect(found["eligible"] as? Bool == false)
+            #expect(found["next_step_date"] is Date)
+            #expect(found["required_by"] == nil)
+        }
+
+        @Test func reportEntryForAnEligibleVersion() async throws {
+            seedCatalog([item("Firefox", "2.0", percent: 50)])
+            _ = await lookup("Firefox")
+            let found = try #require(reportEntry("Firefox", "2.0"))
+            #expect(found["current_deploy_percent"] as? Int == 50)
+            #expect(found["eligible"] as? Bool == true)
+            // a static deployment has no next step
+            #expect(found["next_step_date"] == nil)
+        }
+
+        /// With over 100 steps a step can leave the percent unchanged. This is when it next rises.
+        @Test func reportNextStepDateIsWhenThePercentNextRises() async throws {
+            seedCatalog([item("Firefox", "2.0", deployment: ["start": date("2026-10-12 00:00"), "end": date("2026-10-24 00:00")])])
+            DeploymentRecords.shared.now = subtractTZOffsetFromDate(date("2026-10-14 09:30"))
+            _ = await lookup("Firefox")
+            let found = try #require(reportEntry("Firefox", "2.0"))
+            #expect(found["current_deploy_percent"] as? Int == 25)
+            #expect(found["next_step_date"] as? Date == subtractTZOffsetFromDate(date("2026-10-14 12:00")))
+        }
+
+        @Test func noReportEntryWhenInstallableConditionFailsFirst() async {
+            defer { PredicateInfo.shared.info = PlistDict() }
+            PredicateInfo.shared.info = ["deploy_percent": 50]
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["installable_condition": "deploy_percent <= 10"])])
+            _ = await lookup("Firefox")
+            #expect(deploymentReportEntries().isEmpty)
+        }
+
+        @Test func reportHasOneEntryPerVersion() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0", percent: 50), item("Firefox", "0.9")])
+            _ = await lookup("Firefox")
+            _ = await lookup("Firefox")
+            // 0.9 has no deployment, so it has no entry
+            #expect(deploymentReportEntries().map { $0["version"] as? String } == ["1.0", "2.0"])
+        }
+
+        @Test func reportEntryUsesTheOverride() async throws {
+            seedCatalog([item("Firefox", "2.0", percent: 50)])
+            DeploymentRecords.shared.commandLineDeployPercent = 7
+            _ = await lookup("Firefox")
+            #expect(try #require(reportEntry("Firefox", "2.0"))["package_deploy_percent"] as? Int == 7)
+        }
+
+        @Test func noReportEntryWhenAnotherCheckFailsFirst() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["minimum_os_version": "99.0"])])
+            _ = await lookup("Firefox")
+            #expect(deploymentReportEntries().isEmpty)
+        }
+
+        @Test func noReportEntryWhenTheCheckIsSkipped() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            _ = await lookup("Firefox", skipDeploymentCheck: true)
+            #expect(deploymentReportEntries().isEmpty)
+        }
+
+        @Test func noReportEntryForAnInvalidDeployment() async {
+            seedCatalog([item("Firefox", "2.0", deployment: ["percent": 0])])
+            _ = await lookup("Firefox")
+            #expect(deploymentReportEntries().isEmpty)
+        }
+
+        @Test func autoremoveChecksDoNotAddReportEntries() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["autoremove": true])])
+            _ = await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs)
+            #expect(deploymentReportEntries().isEmpty)
+        }
+
+        /// The report is saved as a plist, and one bad value stops it saving.
+        @Test func reportEntriesCanBeSavedAsAPlist() async throws {
+            seedCatalog([
+                item("Firefox", "2.0", deployment: ["start": date("2099-01-05 00:00"), "percent_per_hour": 10]),
+                item("Firefox", "1.0"),
+            ])
+            _ = await lookup("Firefox")
+            let plist: PlistDict = ["Deployments": deploymentReportEntries()]
+            _ = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        }
+
+        // MARK: autoremove
+
+        private func autoRemovals() async -> [String] {
+            return await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs)
+        }
+
+        @Test func autoremoveOnAVersionNotEligibleForDoesNotCount() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: ["autoremove": true]), item("Firefox", "1.0")])
+            #expect(await autoRemovals() == [])
+        }
+
+        @Test func autoremoveCountsOnceEligible() async {
+            seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["autoremove": true]), item("Firefox", "1.0")])
+            #expect(await autoRemovals() == ["Firefox"])
+        }
+
+        @Test func autoremoveOnAnEligibleOlderVersionStillCounts() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 1, extra: ["autoremove": true]),
+                item("Firefox", "1.0", extra: ["autoremove": true]),
+            ])
+            #expect(await autoRemovals() == ["Firefox"])
+        }
+
+        @Test func autoremoveSkipsAnItemWaitingOnWhatItRequires() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"], "autoremove": true]),
+                item("Zoom", "2.0", deployment: notStarted),
+            ])
+            var installInfo = PlistDict()
+            _ = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(await getAutoRemovalItems(installInfo: installInfo, catalogList: testCatalogs) == [])
+        }
+
+        @Test func autoremoveDoesNotConfuseHyphenatedNames() async {
+            seedCatalog([item("Foo", "2.0", percent: 1), item("Foo-2", "1.0", extra: ["autoremove": true])])
+            _ = await lookup("Foo")
+            #expect(DeploymentRecords.shared.isWaiting("Foo"))
+            #expect(await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs) == ["Foo-2"])
+        }
+
+        @Test func autoremoveSkipsAPinnedVersionNotEligibleFor() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0", extra: ["autoremove": true])])
+            var installInfo = PlistDict()
+            _ = await processInstall("Firefox--2.0", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(await getAutoRemovalItems(installInfo: installInfo, catalogList: testCatalogs) == [])
+        }
+
+        // MARK: installs
+
+        private func install(_ name: String) async -> (Bool, PlistDict) {
+            var installInfo = PlistDict()
+            let result = await processInstall(name, catalogList: testCatalogs, installInfo: &installInfo)
+            return (result, installInfo)
+        }
+
+        @Test func eligibleInstallsNewestDirectly() async {
+            seedCatalog([item("Firefox", "2.0", percent: 36), item("Firefox", "1.0")])
+            let (result, installInfo) = await install("Firefox")
+            #expect(result)
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
+        }
+
+        @Test func notEligibleInstallsTheOlderVersion() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0")])
+            let (result, installInfo) = await install("Firefox")
+            #expect(result)
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
+        }
+
+        @Test func noEligibleVersionInstallsNothing() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox") == nil)
+        }
+
+        @Test func aVersionWithoutADeploymentInstallsNow() async {
+            seedCatalog([item("Firefox", "1.2", percent: 1), item("Firefox", "1.1"), item("Firefox", "1.0", path: installedPath)])
+            let (_, installInfo) = await install("Firefox")
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.1")
+        }
+
+        @Test func forceInstallDateOnlyAppliesOnceEligible() async {
+            let forced: PlistDict = ["force_install_after_date": date("2020-01-06 00:00")]
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: forced), item("Firefox", "1.0")])
+            let (_, before) = await install("Firefox")
+            #expect(entry(before, "Firefox")?["force_install_after_date"] == nil)
+
+            seedCatalog([item("Firefox", "2.0", percent: 36, extra: forced), item("Firefox", "1.0")])
+            let (_, after) = await install("Firefox")
+            #expect(entry(after, "Firefox")?["force_install_after_date"] != nil)
+        }
+
+        // MARK: required packages
+
+        /// A deployment only makes a version available or not, so what's required follows its own.
+        @Test func aRequirementFollowsItsOwnDeployment() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", percent: 1),
+                item("Zoom", "1.0"),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(result)
+            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
+        }
+
+        @Test func itemWaitsWhenMachineIsNotEligibleForWhatItRequires() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", percent: 1),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox") == nil)
+        }
+
+        /// Munki's normal checks decide, the same as a version rejected by any other check.
+        @Test func normalChecksDecideWhenANewerVersionIsNotEligible() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath), item("Firefox", "1.0", path: missingPath)])
+            let (_, installInfo) = await install("Firefox")
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
+        }
+
+        @Test func itemWithoutADeploymentDoesNotBringAnythingAlong() async {
+            seedCatalog([
+                item("Firefox", "1.0", extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", percent: 1),
+                item("Zoom", "1.0"),
+            ])
+            let (_, installInfo) = await install("Firefox")
+            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
+        }
+
+        @Test func updateForDoesNotFollow() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36),
+                item("Zoom", "2.0", percent: 1, extra: ["update_for": ["Firefox"]]),
+                item("Zoom", "1.0", extra: ["update_for": ["Firefox"]]),
+            ])
+            let (_, installInfo) = await install("Firefox")
+            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
+        }
+
+        @Test func itemWaitsWhenWhatItRequiresHasNotStarted() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", deployment: notStarted),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            // no entry means no problem item, and it installs once Zoom's deployment starts
+            #expect(entry(installInfo, "Firefox") == nil)
+            #expect(entry(installInfo, "Zoom") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Firefox"))
+        }
+
+        @Test func waitingCarriesUpAChain() async {
+            seedCatalog([
+                item("Top", "1.0", extra: ["requires": ["Firefox"]]),
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", deployment: notStarted),
+            ])
+            let (result, installInfo) = await install("Top")
+            #expect(!result)
+            #expect(entry(installInfo, "Top") == nil)
+            #expect(DeploymentRecords.shared.isWaiting("Top"))
+        }
+
+        @Test func itemWaitsWhenWhatItRequiresIsInvalid() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", deployment: ["percent": 0]),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox") == nil)
+        }
+
+        @Test func waitingWorksForARequirementWithAPath() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["apps/Zoom"]]),
+                item("Zoom", "2.0", deployment: notStarted),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox") == nil)
+        }
+
+        @Test func aRealDependencyProblemIsStillAProblem() async {
+            seedCatalog([item("Firefox", "2.0", percent: 36, extra: ["requires": ["DoesNotExist"]])])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox")?["note"] != nil)
+        }
+
+        @Test func anOrdinaryPinnedRequirementStillBehavesAsBefore() async {
+            seedCatalog([
+                item("Firefox", "2.0", extra: ["requires": ["Zoom--3.0"]]),
+                item("Zoom", "1.0"),
+            ])
+            var installInfo = PlistDict()
+            _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
+            let result = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(result)
+        }
+
+        /// An admin may want Zoom 2.0 and 3.0 both installed at different paths. Pinning 2.0 means
+        /// 2.0, as it always has, whatever else is installed and whatever was looked up first.
+        @Test func aPinnedVersionInstallsAlongsideANewerOne() async {
+            let items = [
+                item("Zoom", "3.0", deployment: notStarted, path: installedPath),
+                item("Zoom", "2.0", path: missingPath),
+            ]
+            seedCatalog(items)
+            let (result, installInfo) = await install("Zoom--2.0")
+            #expect(result)
+            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "2.0")
+
+            seedCatalog(items)
+            _ = await lookup("Zoom")
+            let (_, afterLookup) = await install("Zoom--2.0")
+            #expect(entry(afterLookup, "Zoom")?["version_to_install"] as? String == "2.0")
+        }
+
+        /// With no deployment anywhere, all of this has to match Munki's existing behavior.
+        @Test func itemsWithoutADeploymentAreUntouched() async {
+            seedCatalog([
+                item("Firefox", "2.0", extra: ["requires": ["Zoom--3.0"], "autoremove": true]),
+                item("Zoom", "2.0", path: installedPath),
+                item("Zoom", "1.0"),
+            ])
+            var installInfo = PlistDict()
+            _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
+            // existing behavior: any processed version counts as meeting a pinned requirement
+            #expect(await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo))
+            #expect(DeploymentRecords.shared.logged.isEmpty)
+            #expect(DeploymentRecords.shared.waiting.isEmpty)
+            #expect(deploymentReportEntries().isEmpty)
+            #expect(await getAutoRemovalItems(installInfo: PlistDict(), catalogList: testCatalogs) == ["Firefox"])
+        }
+
+        @Test func aWaitingAndAFailingRequirementIsStillAProblem() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom", "DoesNotExist"]]),
+                item("Zoom", "2.0", deployment: notStarted),
+            ])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox")?["note"] != nil)
+        }
+
+        // MARK: removals
+
+        private let removable: PlistDict = [
+            "uninstallable": true, "uninstall_method": "uninstall_script", "uninstall_script": "#!/bin/sh\n",
+        ]
+
+        /// Removals are never gated, even for a version this machine isn't eligible for.
+        @Test func removingASpecificVersionIgnoresItsDeployment() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath, extra: removable)])
+            var installInfo = PlistDict()
+            _ = await processRemoval("Firefox--2.0", catalogList: testCatalogs, installInfo: &installInfo)
+            let removals = installInfo["removals"] as? [PlistDict] ?? []
+            #expect(removals.contains { $0["name"] as? String == "Firefox" })
+        }
+
+        /// Munki's existing rule: an item already processed counts as meeting an unpinned requirement,
+        /// and a deployment doesn't change the install list once it's built.
+        @Test func aRequirementLeavesAVersionProcessedEarlier() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom"]]),
+                item("Zoom", "2.0", percent: 1),
                 item("Zoom", "1.0"),
             ])
             var installInfo = PlistDict()
             _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
             #expect(await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo))
-            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
+            let order = (installInfo["managed_installs"] as? [PlistDict] ?? []).map { $0["version_to_install"] as? String }
+            #expect(order == ["1.0", "2.0"])
+        }
+
+        /// Munki's existing rule: any processed version counts as meeting a pinned requirement, and
+        /// the first one processed wins. A deployment on the version doesn't change that.
+        @Test func aProcessedVersionMeetsAPinnedRequirement() async {
+            for zoom3 in [item("Zoom", "3.0", percent: 1), item("Zoom", "3.0", deployment: notStarted)] {
+                seedCatalog([
+                    item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom--3.0"]]),
+                    zoom3,
+                    item("Zoom", "1.0"),
+                ])
+                var installInfo = PlistDict()
+                _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
+                #expect(await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo))
+                #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "1.0")
+                #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
+            }
+        }
+
+        /// The first one processed wins here too: the requirement's version, then the manifest's is skipped.
+        @Test func aPinnedRequirementProcessedFirstWins() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom--2.0"]]),
+                item("Zoom", "2.0"),
+                item("Zoom", "1.0"),
+            ])
+            var installInfo = PlistDict()
+            _ = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(await processInstall("Zoom--1.0", catalogList: testCatalogs, installInfo: &installInfo))
+            #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "2.0")
+        }
+
+        // MARK: managed updates
+
+        @Test func managedUpdateWaitsForEligibility() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: otherVersionInstalled), item("Firefox", "1.0", path: installedPath)])
+            var installInfo = PlistDict()
+            await processManagedUpdate("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
+            #expect(entry(installInfo, "Firefox")?["installed"] as? Bool == true)
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] == nil)
+        }
+
+        @Test func managedUpdateOffersTheVersionOnceEligible() async {
+            seedCatalog([item("Firefox", "2.0", percent: 36, extra: otherVersionInstalled), item("Firefox", "1.0", path: installedPath)])
+            var installInfo = PlistDict()
+            await processManagedUpdate("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
             #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
+        }
+
+        // MARK: optional installs
+
+        private func optional(_ name: String) async -> PlistDict? {
+            var installInfo = PlistDict()
+            await processOptionalInstall(name, catalogList: testCatalogs, installInfo: &installInfo)
+            let entries = installInfo["optional_installs"] as? [PlistDict] ?? []
+            return entries.first { $0["name"] as? String == name }
+        }
+
+        /// 1.0 is installed and 2.0 is rolling out. Only 1.0 is available, and it can be uninstalled.
+        @Test func optionalOffersOnlyTheEligibleVersion() async throws {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 1, path: missingPath),
+                item("Firefox", "1.0", path: installedPath, extra: ["uninstallable": true, "uninstall_method": "uninstall_script"]),
+            ])
+            let found = try #require(await optional("Firefox"))
+            #expect(found["version_to_install"] as? String == "1.0")
+            #expect(found["installed"] as? Bool == true)
+            #expect(found["needs_update"] as? Bool == false)
+            #expect(found["uninstallable"] as? Bool == true)
+        }
+
+        @Test func optionalOffersTheUpdateOnceEligible() async throws {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: otherVersionInstalled),
+                item("Firefox", "1.0", path: installedPath),
+            ])
+            let found = try #require(await optional("Firefox"))
+            #expect(found["version_to_install"] as? String == "2.0")
+            #expect(found["needs_update"] as? Bool == true)
+        }
+
+        @Test func optionalWithNoEligibleVersionIsNotListed() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            #expect(await optional("Firefox") == nil)
+        }
+    }
+}
+
+struct DeploymentOptionsTests {
+    private func value(_ arguments: [String]) throws -> PlistDict? {
+        return try DeploymentOptions.parse(arguments).pkginfoValue()
+    }
+
+    private func expectRejected(_ arguments: [String], sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(throws: (any Error).self, sourceLocation: sourceLocation) {
+            _ = try DeploymentOptions.parse(arguments)
         }
     }
 
-    /// The first one processed wins here too: the requirement's version, then the manifest's is skipped.
-    @Test func aPinnedRequirementProcessedFirstWins() async {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom--2.0"]]),
-            item("Zoom", "2.0"),
-            item("Zoom", "1.0"),
-        ])
-        var installInfo = PlistDict()
-        _ = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(await processInstall("Zoom--1.0", catalogList: testCatalogs, installInfo: &installInfo))
-        #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "2.0")
+    @Test func noOptionsMeansNoDeployment() throws {
+        #expect(try value([]) == nil)
     }
 
-    // MARK: managed updates
+    @Test func eachOptionSetsItsKey() throws {
+        let startEnd = try #require(try value([
+            "--deployment-start", "2026-10-12T09:00:00Z",
+            "--deployment-end", "2026-10-13T17:00:00Z",
+            "--deployment-step-hours", "2",
+        ]))
+        #expect(startEnd["start"] as? Date == date("2026-10-12 09:00"))
+        #expect(startEnd["end"] as? Date == date("2026-10-13 17:00"))
+        #expect(startEnd["step_hours"] as? Int == 2)
+        #expect(startEnd.count == 3)
 
-    @Test func managedUpdateWaitsForEligibility() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1, extra: otherVersionInstalled), item("Firefox", "1.0", path: installedPath)])
-        var installInfo = PlistDict()
-        await processManagedUpdate("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(entry(installInfo, "Firefox")?["installed"] as? Bool == true)
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] == nil)
+        let start = "2026-10-12"
+        #expect(try value(["--deployment-start", start, "--deployment-percent-per-hour", "10"])?["percent_per_hour"] as? Int == 10)
+        #expect(try value(["--deployment-start", start, "--deployment-percent-per-day", "20"])?["percent_per_day"] as? Int == 20)
+        let perStep = try value(["--deployment-start", start, "--deployment-percent-per-step", "10", "--deployment-step-hours", "24"])
+        #expect(perStep?["percent_per_step"] as? Int == 10)
+        #expect(perStep?["step_hours"] as? Int == 24)
+        #expect(try value(["--deployment-percent", "5"])?["percent"] as? Int == 5)
+        #expect(try value(["--deployment-percent", "5", "--deployment-start", start])?["start"] as? Date == date("2026-10-12 00:00"))
     }
 
-    @Test func managedUpdateOffersTheVersionOnceEligible() async {
-        seedCatalog([item("Firefox", "2.0", percent: 36, extra: otherVersionInstalled), item("Firefox", "1.0", path: installedPath)])
-        var installInfo = PlistDict()
-        await processManagedUpdate("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-        #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "2.0")
+    @Test func dateAloneMeansStartOrEndOfThatDay() throws {
+        let deployment = try value(["--deployment-start", "2026-10-12", "--deployment-end", "2026-10-23"])
+        #expect(deployment?["start"] as? Date == date("2026-10-12 00:00"))
+        #expect(deployment?["end"] as? Date == date("2026-10-24 00:00"))
     }
 
-    // MARK: optional installs
-
-    private func optional(_ name: String) async -> PlistDict? {
-        var installInfo = PlistDict()
-        await processOptionalInstall(name, catalogList: testCatalogs, installInfo: &installInfo)
-        let entries = installInfo["optional_installs"] as? [PlistDict] ?? []
-        return entries.first { $0["name"] as? String == name }
+    /// What's written has to pass the same validation the client uses.
+    @Test func valuesAreValidDeployments() throws {
+        let deployment = try value(["--deployment-start", "2026-10-12", "--deployment-end", "2026-10-23"])
+        #expect(try Deployment(deployment).state(at: date("2026-10-23 23:59")).currentPercent == 99)
     }
 
-    /// 1.0 is installed and 2.0 is rolling out. Only 1.0 is available, and it can be uninstalled.
-    @Test func optionalOffersOnlyTheEligibleVersion() async throws {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 1, path: missingPath),
-            item("Firefox", "1.0", path: installedPath, extra: ["uninstallable": true, "uninstall_method": "uninstall_script"]),
-        ])
-        let found = try #require(await optional("Firefox"))
-        #expect(found["version_to_install"] as? String == "1.0")
-        #expect(found["installed"] as? Bool == true)
-        #expect(found["needs_update"] as? Bool == false)
-        #expect(found["uninstallable"] as? Bool == true)
+    /// The flags have to reach the pkginfo, as a real date.
+    @Test func makepkginfoWritesTheDeployment() throws {
+        let options = try PkginfoOptions(
+            override: .parse(["--name", "Firefox", "--pkgvers", "1.0"]),
+            script: .parse([]),
+            dmg: .parse([]),
+            pkg: .parse([]),
+            force: .parse([]),
+            deployment: .parse(["--deployment-start", "2026-10-12", "--deployment-percent-per-day", "10"]),
+            installs: .parse([]),
+            type: .parse(["--nopkg"]),
+            other: .parse([]),
+            hidden: .parse([])
+        )
+        let deployment = try #require(try makepkginfo(nil, options: options)["deployment"] as? PlistDict)
+        #expect(deployment["start"] as? Date == date("2026-10-12 00:00"))
+        #expect(deployment["percent_per_day"] as? Int == 10)
     }
 
-    @Test func optionalOffersTheUpdateOnceEligible() async throws {
-        seedCatalog([
-            item("Firefox", "2.0", percent: 36, extra: otherVersionInstalled),
-            item("Firefox", "1.0", path: installedPath),
-        ])
-        let found = try #require(await optional("Firefox"))
-        #expect(found["version_to_install"] as? String == "2.0")
-        #expect(found["needs_update"] as? Bool == true)
+    @Test func noFlagsMeansNoDeploymentKey() throws {
+        let options = try PkginfoOptions(
+            override: .parse(["--name", "Firefox", "--pkgvers", "1.0"]),
+            script: .parse([]),
+            dmg: .parse([]),
+            pkg: .parse([]),
+            force: .parse([]),
+            deployment: .parse([]),
+            installs: .parse([]),
+            type: .parse(["--nopkg"]),
+            other: .parse([]),
+            hidden: .parse([])
+        )
+        #expect(try makepkginfo(nil, options: options)["deployment"] == nil)
     }
 
-    @Test func optionalWithNoEligibleVersionIsNotListed() async {
-        seedCatalog([item("Firefox", "2.0", percent: 1)])
-        #expect(await optional("Firefox") == nil)
+    @Test func invalidCombinationsAreRejected() {
+        let start = ["--deployment-start", "2026-10-12"]
+        // two modes
+        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-percent", "5"])
+        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-percent-per-day", "5"])
+        // no mode
+        expectRejected(start)
+        expectRejected(["--deployment-step-hours", "2"])
+        // dated modes without a start
+        expectRejected(["--deployment-end", "2026-10-13"])
+        expectRejected(["--deployment-percent-per-hour", "5"])
+        expectRejected(["--deployment-percent-per-day", "5"])
+        expectRejected(["--deployment-percent-per-step", "5", "--deployment-step-hours", "2"])
+        // end at or before start, or no weekday time between them
+        expectRejected(["--deployment-start", "2026-10-13T00:00:00Z", "--deployment-end", "2026-10-12T00:00:00Z"])
+        expectRejected(["--deployment-start", "2026-10-17", "--deployment-end", "2026-10-18"])
+        // step_hours where it isn't allowed, or missing where it's required
+        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-step-hours", "2"])
+        expectRejected(start + ["--deployment-percent-per-day", "5", "--deployment-step-hours", "2"])
+        expectRejected(start + ["--deployment-percent-per-step", "5"])
+        expectRejected(["--deployment-percent", "5", "--deployment-step-hours", "2"])
+        // out of range
+        expectRejected(["--deployment-percent", "0"])
+        expectRejected(["--deployment-percent", "101"])
+        expectRejected(start + ["--deployment-percent-per-hour", "0"])
+        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-step-hours", "0"])
+    }
+
+    @Test func badDatesAreRejected() {
+        expectRejected(["--deployment-start", "soon", "--deployment-percent", "5"])
+        expectRejected(["--deployment-start", "2026-13-45", "--deployment-percent", "5"])
+        expectRejected(["--deployment-start", "26-10-12", "--deployment-percent", "5"])
+        expectRejected(["--deployment-start", "2026-2-3", "--deployment-percent", "5"])
+        // an offset would be lost, since pkginfo dates mean local time
+        expectRejected(["--deployment-start", "2026-10-12T09:00:00-07:00", "--deployment-percent", "5"])
+    }
+}
+
+struct DeploymentWarningsTests {
+    private let monday = date("2026-10-12 09:00")
+    private let tuesday = date("2026-10-13 09:00")
+    private let saturday = date("2026-10-17 09:00")
+    private let sunday = date("2026-10-18 09:00")
+
+    @Test func nothingToSay() {
+        #expect(deploymentWarnings(nil).isEmpty)
+        #expect(deploymentWarnings(["percent": 5]).isEmpty)
+        #expect(deploymentWarnings(["start": monday, "end": tuesday, "step_hours": 2]).isEmpty)
+    }
+
+    @Test func invalidDeployments() {
+        let invalid: [[String: Any]] = [
+            ["percent": 0],
+            ["start": monday],
+            ["start": tuesday, "end": monday],
+            // no weekday time between them
+            ["start": saturday, "end": sunday],
+            ["start": monday, "percent_per_hour": 10, "step_hours": 2],
+            ["start": monday, "percent_per_step": 10],
+        ]
+        for dict in invalid {
+            let warnings = deploymentWarnings(dict)
+            #expect(warnings.count == 1)
+            #expect(warnings.first?.contains("invalid deployment") == true)
+        }
+        #expect(deploymentWarnings("not a dictionary").count == 1)
+    }
+
+    /// A date-only end on a Friday is written as Saturday 00:00, which clients leave as it is.
+    @Test func saturdayMidnightEndIsNotWorthAWarning() {
+        #expect(deploymentWarnings(["start": monday, "end": date("2026-10-24 00:00")]).isEmpty)
+        #expect(deploymentWarnings(["start": monday, "end": date("2026-10-24 00:01")]).count == 1)
+    }
+
+    @Test func validButProbablyNotWhatWasMeant() {
+        #expect(deploymentWarnings(["start": saturday, "end": date("2026-10-20 09:00")]).first?.contains("start on a weekend") == true)
+        #expect(deploymentWarnings(["start": monday, "end": sunday]).first?.contains("end on a weekend") == true)
+        #expect(deploymentWarnings(["start": sunday, "percent": 5]).first?.contains("start on a weekend") == true)
+        #expect(deploymentWarnings(["percent": 5, "step_hours": 2]).first?.contains("ignore step_hours") == true)
+    }
+}
+
+struct DeploymentRepocleanTests {
+    private let now = date("2026-10-20 12:00")
+
+    @Test func noDeploymentIsNotUnfinished() {
+        #expect(!deploymentIsUnfinished(nil, now: now))
+    }
+
+    @Test func unfinishedDeployments() {
+        let unfinished: [[String: Any]] = [
+            ["start": date("2099-01-05 00:00"), "percent": 5], // scheduled
+            ["start": date("2026-10-12 00:00"), "end": date("2099-01-05 00:00")], // in progress
+            ["percent": 99], // static below 100
+            ["percent": 0], // invalid
+        ]
+        for dict in unfinished {
+            #expect(deploymentIsUnfinished(dict, now: now))
+        }
+    }
+
+    @Test func finishesWhenItReachesOneHundred() {
+        let deployment: [String: Any] = ["start": date("2026-10-12 00:00"), "end": date("2026-10-13 00:00")]
+        #expect(deploymentIsUnfinished(deployment, now: date("2026-10-12 23:59")))
+        #expect(!deploymentIsUnfinished(deployment, now: date("2026-10-13 00:00")))
+    }
+
+    @Test func finishedDeployments() {
+        let finished: [[String: Any]] = [
+            ["start": date("2026-10-12 00:00"), "end": date("2026-10-13 00:00")],
+            ["percent": 100],
+            ["start": date("2026-10-12 00:00"), "percent": 100],
+        ]
+        for dict in finished {
+            #expect(!deploymentIsUnfinished(dict, now: now))
+        }
     }
 }

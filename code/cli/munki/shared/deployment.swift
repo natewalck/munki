@@ -351,3 +351,35 @@ func packageDeployPercent(identifier: String?, itemName: String) -> Int {
     guard let identifier else { return 100 }
     return deployPercent(hashing: "\(identifier):\(itemName)")
 }
+
+/// Returns what an admin should hear about a pkginfo's `deployment`, for makecatalogs.
+/// The list is empty if there's no deployment or nothing to mention.
+func deploymentWarnings(_ value: Any?) -> [String] {
+    guard let value else { return [] }
+    do {
+        _ = try Deployment(value)
+    } catch {
+        return ["has an invalid deployment, so no machine is eligible for this version: \(error)"]
+    }
+    var warnings = [String]()
+    let dict = value as? [String: Any] ?? [:]
+    if let start = dict["start"] as? Date, isWeekend(wholeSeconds(start)) {
+        warnings.append("has a deployment start on a weekend, which clients treat as the following Monday 00:00")
+    }
+    // Saturday 00:00 is the end of Friday, which a date-only --deployment-end writes
+    if let end = dict["end"] as? Date, isWeekend(wholeSeconds(end)), wholeSeconds(end) != saturdayMidnight(wholeSeconds(end)) {
+        warnings.append("has a deployment end on a weekend, which clients treat as the preceding Saturday 00:00")
+    }
+    if dict["percent"] != nil, dict["step_hours"] != nil {
+        warnings.append("has a deployment with both percent and step_hours, and clients ignore step_hours")
+    }
+    return warnings
+}
+
+/// Returns true if a pkginfo has a `deployment` that hasn't reached 100, or is invalid.
+/// Machines may still need older versions of the item while this is true.
+func deploymentIsUnfinished(_ value: Any?, now: Date) -> Bool {
+    guard let value else { return false }
+    guard let deployment = try? Deployment(value) else { return true }
+    return deployment.state(at: now).status != .complete
+}

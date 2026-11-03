@@ -299,6 +299,10 @@
 		C0684E7A2DC7BF590091E774 /* scriptutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D9C2A22C61939E0019A067 /* scriptutils.swift */; };
 		C0684E7B2DC7BF720091E774 /* munkihash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C030A98E2C39C135007F0B34 /* munkihash.swift */; };
 		D3E1A0022F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0102F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0112F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0122F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
+		D3E1A0132F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
 		D3E1A0062F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
 		D3E1A0052F90000000DE0001 /* deployment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1A0012F90000000DE0001 /* deployment.swift */; };
 		C0684E7C2DC7BFAD0091E774 /* appinventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07AED622C66CFBD00DE6119 /* appinventory.swift */; };
@@ -2034,6 +2038,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D3E1A0102F90000000DE0001 /* deployment.swift in Sources */,
 				C030A9B82C3DF7DA007F0B34 /* fileutils.swift in Sources */,
 				C0684E432DC580850091E774 /* dmgutils.swift in Sources */,
 				C030A9982C3A2E18007F0B34 /* makepkginfo.swift in Sources */,
@@ -2064,6 +2069,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D3E1A0112F90000000DE0001 /* deployment.swift in Sources */,
 				C030A9D42C41F849007F0B34 /* munkiimportOptions.swift in Sources */,
 				C0D00FBA2C45BCB90021DA9C /* errors.swift in Sources */,
 				C030A9E92C424179007F0B34 /* fileutils.swift in Sources */,
@@ -2490,6 +2496,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D3E1A0122F90000000DE0001 /* deployment.swift in Sources */,
 				C07A6FDC2C2CF19600090743 /* cliutils.swift in Sources */,
 				C0D00FA32C457E5F0021DA9C /* fileutils.swift in Sources */,
 				C01364452C2DD1BA008DB215 /* plistutils.swift in Sources */,
@@ -2548,6 +2555,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D3E1A0132F90000000DE0001 /* deployment.swift in Sources */,
 				C0BF62DC2CEC07710030885D /* RepoFactory.swift in Sources */,
 				C0BF62E02CEC07E00030885D /* versionutils.swift in Sources */,
 				C0BF62E42CEC115B0030885D /* constants.swift in Sources */,
