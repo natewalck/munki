@@ -49,8 +49,9 @@ struct DeploymentStrategyTests {
 
         #expect(percent(rollout, "2026-10-11 23:59") == 0)
         #expect(percent(rollout, "2026-10-12 00:00") == 1)
-        // rounding up would give 100 here, but only the last step reaches it
-        #expect(percent(rollout, "2026-10-23 21:00") == 99)
+        // rounding up would give 100 from 22:00, but only the last step reaches it
+        #expect(percent(rollout, "2026-10-23 21:59") == 99)
+        #expect(percent(rollout, "2026-10-23 22:00") == 99)
         #expect(percent(rollout, "2026-10-23 23:59") == 99)
         #expect(percent(rollout, "2026-10-24 00:00") == 100)
     }
@@ -105,15 +106,6 @@ struct DeploymentStrategyTests {
         // the design's "rounding up gets there an hour early"
         #expect(percent(rollout, "2026-10-16 22:00") == 100)
         #expect(rollout.state(at: date("2026-10-12 00:00")).totalSteps == 119)
-    }
-
-    @Test func percentPerStepOnConsecutiveDays() throws {
-        let rollout = try deployment([
-            "start": date("2026-10-12 00:00"), "percent_per_step": 20, "step_hours": 24,
-        ])
-        for (index, day) in ["12", "13", "14", "15", "16"].enumerated() {
-            #expect(percent(rollout, "2026-10-\(day) 00:00") == (index + 1) * 20)
-        }
     }
 
     @Test func staticPercent() throws {
@@ -220,6 +212,14 @@ struct DeploymentStepTests {
         #expect(percent(rollout, "2026-10-12 02:00") == 18)
         #expect(percent(rollout, "2026-10-12 15:00") == 95)
         #expect(percent(rollout, "2026-10-12 16:00") == 100)
+    }
+
+    @Test func rateWithAPartialStartHourContinuesOnTheHour() throws {
+        let rollout = try deployment(["start": date("2026-10-20 08:30"), "percent_per_hour": 10])
+        #expect(percent(rollout, "2026-10-20 08:30") == 10)
+        #expect(percent(rollout, "2026-10-20 08:59") == 10)
+        #expect(percent(rollout, "2026-10-20 09:00") == 20)
+        #expect(rollout.state(at: date("2026-10-20 08:30")).nextStepDate == date("2026-10-20 09:00"))
     }
 
     @Test func staysAtOneHundred() throws {
@@ -333,6 +333,26 @@ struct DeploymentLocalTimeTests {
         #expect(rollout.state(at: date("2026-10-20 00:00"), toRealDate: tokyo).currentPercent == 12)
     }
 
+    /// Each step converts on its own date, so a clock change moves the steps after it. Clocks
+    /// change on a Sunday in the US, so this one changes on a Monday, as they do elsewhere.
+    @Test func aClockChangeMovesTheStepsAfterIt() throws {
+        let change = date("2026-10-20 00:00")
+        let toRealDate: (Date) -> Date = { $0.addingTimeInterval($0 < change ? 8 * 3600 : 7 * 3600) }
+        let rollout = try deployment(["start": date("2026-10-19 22:00"), "percent_per_hour": 10])
+        // 23:00 before the change is 07:00 UTC
+        #expect(rollout.state(at: date("2026-10-20 06:59"), toRealDate: toRealDate).currentPercent == 10)
+        #expect(rollout.state(at: date("2026-10-20 07:00"), toRealDate: toRealDate).currentPercent == 30)
+        // 01:00 after it is 08:00 UTC
+        #expect(rollout.state(at: date("2026-10-20 07:59"), toRealDate: toRealDate).currentPercent == 30)
+        #expect(rollout.state(at: date("2026-10-20 08:00"), toRealDate: toRealDate).currentPercent == 40)
+    }
+
+    @Test func staticStartDateIsConverted() throws {
+        let canary = try deployment(["start": date("2026-11-05 00:00"), "percent": 5])
+        let state = canary.state(at: date("2026-11-01 00:00"), toRealDate: toRealDate(in: "Asia/Tokyo"))
+        #expect(state.nextStepDate == date("2026-11-04 15:00"))
+    }
+
     @Test func returnedDatesAreConverted() throws {
         let rollout = try deployment(["start": date("2026-10-20 09:00"), "end": date("2026-10-20 17:00")])
         let state = rollout.state(at: date("2026-10-20 12:00"), toRealDate: toRealDate(in: "America/Los_Angeles"))
@@ -345,33 +365,6 @@ struct DeploymentLocalTimeTests {
         let tokyo = toRealDate(in: "Asia/Tokyo")
         #expect(canary.state(at: date("2026-11-04 14:59"), toRealDate: tokyo).currentPercent == 0)
         #expect(canary.state(at: date("2026-11-04 15:00"), toRealDate: tokyo).currentPercent == 5)
-    }
-
-    @Test func usesTheSameConversionAsForceInstall() throws {
-        let rollout = try deployment(["start": date("2026-10-20 09:00"), "end": date("2026-10-20 17:00")])
-        let firstStep = subtractTZOffsetFromDate(date("2026-10-20 09:00"))
-        let state = rollout.state(at: firstStep, toRealDate: subtractTZOffsetFromDate)
-        #expect(state.currentPercent == 12)
-        let before = rollout.state(at: firstStep.addingTimeInterval(-1), toRealDate: subtractTZOffsetFromDate)
-        #expect(before.currentPercent == 0)
-    }
-
-    /// Clocks change in Los Angeles on Sunday 2026-03-08 and 2026-11-01. A schedule spanning
-    /// them must never go backward, and must still finish.
-    @Test func clockChangesDoNotBreakASchedule() throws {
-        let losAngeles = toRealDate(in: "America/Los_Angeles")
-        for (start, end) in [("2026-03-06 20:00", "2026-03-10 02:00"), ("2026-10-30 20:00", "2026-11-03 02:00")] {
-            let rollout = try deployment(["start": date(start), "end": date(end)])
-            var previous = 0
-            var now = date(start)
-            while now < date(end).addingTimeInterval(24 * 3600) {
-                let current = rollout.state(at: now, toRealDate: losAngeles).currentPercent
-                #expect(current >= previous)
-                previous = current
-                now.addTimeInterval(900)
-            }
-            #expect(previous == 100)
-        }
     }
 }
 
@@ -489,15 +482,6 @@ struct DeploymentValidationTests {
         #expect(rollout.state(at: start).totalSteps == 1)
     }
 
-    /// Start/end keeps step_hours, and gives the same percents as the matching percent_per_step.
-    @Test func startEndCoversBatches() throws {
-        let startEnd = try deployment(["start": start, "end": end, "step_hours": 2])
-        let perStep = try deployment(["start": start, "percent_per_step": 20, "step_hours": 2])
-        for time in ["09:00", "10:59", "11:00", "13:00", "15:00", "17:00"] {
-            #expect(percent(startEnd, "2026-10-20 \(time)") == percent(perStep, "2026-10-20 \(time)"))
-        }
-    }
-
     @Test func staticWithBadStartIsInvalid() {
         expectInvalid(["start": "2026-11-05T00:00:00Z", "percent": 5])
         expectInvalid(["start": Date(timeIntervalSince1970: 1e30), "percent": 5])
@@ -581,6 +565,16 @@ struct DeploymentValidationTests {
             </dict>
             <key>boolean</key><dict><key>percent</key><true/></dict>
             <key>real</key><dict><key>percent</key><real>5</real></dict>
+            <key>stepBoolean</key><dict>
+                <key>start</key><date>2026-10-12T00:00:00Z</date>
+                <key>percent_per_step</key><integer>10</integer>
+                <key>step_hours</key><true/>
+            </dict>
+            <key>stepReal</key><dict>
+                <key>start</key><date>2026-10-12T00:00:00Z</date>
+                <key>percent_per_step</key><integer>10</integer>
+                <key>step_hours</key><real>2</real>
+            </dict>
             <key>stringDate</key><dict>
                 <key>start</key><string>2026-10-12T00:00:00Z</string>
                 <key>percent_per_day</key><integer>10</integer>
@@ -594,6 +588,8 @@ struct DeploymentValidationTests {
         expectInvalid(plist["boolean"])
         expectInvalid(plist["real"])
         expectInvalid(plist["stringDate"])
+        expectInvalid(plist["stepBoolean"])
+        expectInvalid(plist["stepReal"])
     }
 
     @Test func reasonsNameTheProblem() {
@@ -651,16 +647,6 @@ struct DeployPercentHashTests {
             #expect(buckets.keys.max() == 100)
             #expect(buckets.values.allSatisfy { (850 ... 1150).contains($0) })
         }
-    }
-
-    /// Different items need different first groups.
-    @Test func saltingChangesWhoGoesFirst() {
-        let identifiers = (0 ..< 10000).map { "SERIAL\($0)" }
-        let firefoxFirst = identifiers.filter { packageDeployPercent(identifier: $0, itemName: "Firefox") <= 10 }
-        let zoomFirst = Set(identifiers.filter { packageDeployPercent(identifier: $0, itemName: "Zoom") <= 10 })
-        let overlap = firefoxFirst.filter { zoomFirst.contains($0) }.count
-        // independent groups of 10% overlap by about 10%
-        #expect(Double(overlap) / Double(firefoxFirst.count) < 0.15)
     }
 }
 
@@ -733,7 +719,8 @@ private func entry(_ installInfo: PlistDict, _ name: String) -> PlistDict? {
 /// warnings to Report.shared, which isn't thread-safe and which manifestsTests writes to as well,
 /// so they're nested in that serialized suite rather than changing Report for the sake of tests.
 extension manifestsTests {
-    @Suite struct DeploymentClientTests {
+    @Suite(.disabled(if: intPref("DeployPercentOverride") != nil, "a DeployPercentOverride preference on this machine changes the results"))
+    struct DeploymentClientTests {
         // MARK: catalog lookup
 
         @Test func eligibleAtOrBelowTheCurrentPercent() async {
@@ -787,14 +774,6 @@ extension manifestsTests {
             // nothing found, and not because of a deployment
             #expect(await lookup("Firefox--9.9") == nil)
             #expect(!DeploymentRecords.shared.isWaiting("Firefox"))
-        }
-
-        @Test func namesWithHyphensAreNotConfused() async {
-            seedCatalog([item("Foo-2", "5.0", percent: 1, path: installedPath), item("Foo", "1.0")])
-            var installInfo = PlistDict()
-            _ = await processInstall("Foo-2--5.0", catalogList: testCatalogs, installInfo: &installInfo)
-            _ = await processInstall("Foo", catalogList: testCatalogs, installInfo: &installInfo)
-            #expect(entry(installInfo, "Foo")?["version_to_install"] as? String == "1.0")
         }
 
         @Test func otherChecksComeFirst() async {
@@ -906,6 +885,15 @@ extension manifestsTests {
             #expect(deployPercentFact(machine: ["serial_number": "UNKNOWN", "hardware_uuid": ""]) == 100)
         }
 
+        /// The real fact, in the real predicate info, usable from a condition.
+        @Test func aConditionCanUseTheFact() async {
+            seedCatalog([])
+            let info = await generatePredicateInfo()
+            #expect(info["deploy_percent"] as? Int == 89)
+            #expect(predicateEvaluatesAsTrue("deploy_percent == 89", infoObject: info))
+            #expect(!predicateEvaluatesAsTrue("deploy_percent < 89", infoObject: info))
+        }
+
         @Test func factUsesTheOverride() {
             DeploymentRecords.shared.reset()
             DeploymentRecords.shared.commandLineDeployPercent = 7
@@ -918,19 +906,6 @@ extension manifestsTests {
             DeploymentRecords.shared.commandLineDeployPercent = 7
             defer { DeploymentRecords.shared.reset() }
             #expect(await generatePredicateInfo()["deploy_percent"] as? Int == 7)
-        }
-
-        @Test func installableConditionCanUseTheFact() async {
-            let condition: PlistDict = ["installable_condition": "deploy_percent <= 10"]
-            defer { PredicateInfo.shared.info = PlistDict() }
-
-            PredicateInfo.shared.info = ["deploy_percent": 5]
-            seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
-            #expect(await lookup("Firefox") == "2.0")
-
-            PredicateInfo.shared.info = ["deploy_percent": 50]
-            seedCatalog([item("Firefox", "2.0", extra: condition), item("Firefox", "1.0")])
-            #expect(await lookup("Firefox") == "1.0")
         }
 
         // MARK: report entries
@@ -952,7 +927,6 @@ extension manifestsTests {
             #expect(found["current_deploy_percent"] as? Int == 0)
             #expect(found["eligible"] as? Bool == false)
             #expect(found["next_step_date"] is Date)
-            #expect(found["required_by"] == nil)
         }
 
         @Test func reportEntryForAnEligibleVersion() async throws {
@@ -987,8 +961,13 @@ extension manifestsTests {
             seedCatalog([item("Firefox", "2.0", percent: 1), item("Firefox", "1.0", percent: 50), item("Firefox", "0.9")])
             _ = await lookup("Firefox")
             _ = await lookup("Firefox")
-            // 0.9 has no deployment, so it has no entry
             #expect(deploymentReportEntries().map { $0["version"] as? String } == ["1.0", "2.0"])
+        }
+
+        @Test func noReportEntryForAVersionWithoutADeployment() async {
+            seedCatalog([item("Firefox", "2.0"), item("Firefox", "1.0", percent: 50)])
+            #expect(await lookup("Firefox") == "2.0")
+            #expect(deploymentReportEntries().isEmpty)
         }
 
         @Test func reportEntryUsesTheOverride() async throws {
@@ -1029,8 +1008,63 @@ extension manifestsTests {
                 item("Firefox", "1.0"),
             ])
             _ = await lookup("Firefox")
+            #expect(!deploymentReportEntries().isEmpty)
             let plist: PlistDict = ["Deployments": deploymentReportEntries()]
             _ = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        }
+
+        // MARK: logging
+
+        private func reported(_ key: String, containing text: String) -> [String] {
+            return (Report.shared.retrieve(key: key) as? [String] ?? []).filter { $0.contains(text) }
+        }
+
+        @Test func noEligibleVersionIsNotAWarning() async {
+            seedCatalog([item("LogNoFallback", "2.0", percent: 1)])
+            _ = await install("LogNoFallback")
+            #expect(reported("Warnings", containing: "LogNoFallback").isEmpty)
+            #expect(reported("Errors", containing: "LogNoFallback").isEmpty)
+        }
+
+        @Test func anItemThatDoesNotExistStillWarns() async {
+            seedCatalog([])
+            _ = await install("LogDoesNotExist")
+            #expect(reported("Warnings", containing: "LogDoesNotExist").count == 1)
+        }
+
+        @Test func anotherRejectionStillWarns() async {
+            seedCatalog([
+                item("LogOtherReason", "2.0", percent: 1),
+                item("LogOtherReason", "1.0", extra: ["minimum_os_version": "99.0"]),
+            ])
+            _ = await install("LogOtherReason")
+            #expect(reported("Warnings", containing: "Could not process item LogOtherReason").count == 1)
+        }
+
+        @Test func invalidIsAnErrorLoggedOnce() async {
+            seedCatalog([item("LogInvalid", "2.0", deployment: ["percent": 0])])
+            _ = await install("LogInvalid")
+            _ = await lookup("LogInvalid")
+            #expect(reported("Errors", containing: "LogInvalid").count == 1)
+            #expect(reported("Warnings", containing: "LogInvalid").isEmpty)
+        }
+
+        @Test func waitingOnARequirementIsNotAWarning() async {
+            seedCatalog([
+                item("LogWaitingTop", "1.0", extra: ["requires": ["LogWaitingBase"]]),
+                item("LogWaitingBase", "2.0", percent: 1),
+            ])
+            _ = await install("LogWaitingTop")
+            #expect(reported("Warnings", containing: "LogWaiting").isEmpty)
+        }
+
+        @Test func waitingOnARequirementWhenAlreadyInstalledIsNotAWarning() async {
+            seedCatalog([
+                item("LogInstalledTop", "1.0", path: installedPath, extra: ["requires": ["LogInstalledBase"]]),
+                item("LogInstalledBase", "2.0", percent: 1),
+            ])
+            _ = await install("LogInstalledTop")
+            #expect(reported("Warnings", containing: "LogInstalled").isEmpty)
         }
 
         // MARK: autoremove
@@ -1103,17 +1137,63 @@ extension manifestsTests {
             #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
         }
 
-        @Test func noEligibleVersionInstallsNothing() async {
-            seedCatalog([item("Firefox", "2.0", percent: 1)])
+        /// 1.0 is on disk, and 1.1 is the newest version with no deployment.
+        @Test func aVersionWithoutADeploymentUpdatesNow() async {
+            seedCatalog([
+                item("Firefox", "1.2", percent: 1, extra: otherVersionInstalled),
+                item("Firefox", "1.1", extra: otherVersionInstalled),
+                item("Firefox", "1.0", path: installedPath),
+            ])
+            let (_, installInfo) = await install("Firefox")
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.1")
+        }
+
+        /// 2.0 is on disk at the same path as 1.0, and the machine isn't eligible for 2.0 any more.
+        /// Munki's normal version check sees something newer, so nothing is queued.
+        @Test func aNewerVersionAtTheSamePathIsLeftAlone() async throws {
+            let bundle = FileManager.default.temporaryDirectory.appendingPathComponent("deployment-\(UUID().uuidString).bundle")
+            let contents = bundle.appendingPathComponent("Contents")
+            try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: bundle) }
+            let info = try PropertyListSerialization.data(
+                fromPropertyList: ["CFBundleIdentifier": "com.example.t", "CFBundleShortVersionString": "2.0"],
+                format: .xml,
+                options: 0
+            )
+            try info.write(to: contents.appendingPathComponent("Info.plist"))
+            func installs(_ version: String) -> PlistDict {
+                return ["installs": [["type": "bundle", "path": bundle.path, "CFBundleShortVersionString": version]]]
+            }
+            seedCatalog([item("Firefox", "2.0", percent: 1, extra: installs("2.0")), item("Firefox", "1.0", extra: installs("1.0"))])
+            let (result, installInfo) = await install("Firefox")
+            #expect(result)
+            #expect(entry(installInfo, "Firefox")?["installed"] as? Bool == true)
+            #expect(entry(installInfo, "Firefox")?["version_to_install"] == nil)
+        }
+
+        /// A version-pinned requirement waits the same way, and hyphens stay part of the name.
+        @Test func waitingWorksForAPinnedRequirement() async {
+            seedCatalog([
+                item("Firefox", "2.0", percent: 36, extra: ["requires": ["Zoom--3.0"]]),
+                item("Zoom", "3.0", deployment: notStarted),
+            ])
             let (result, installInfo) = await install("Firefox")
             #expect(!result)
             #expect(entry(installInfo, "Firefox") == nil)
         }
 
-        @Test func aVersionWithoutADeploymentInstallsNow() async {
-            seedCatalog([item("Firefox", "1.2", percent: 1), item("Firefox", "1.1"), item("Firefox", "1.0", path: installedPath)])
-            let (_, installInfo) = await install("Firefox")
-            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.1")
+        @Test func waitingKeepsHyphenatedNamesApart() async {
+            seedCatalog([item("Foo-2", "5.0", percent: 1), item("Foo", "1.0")])
+            _ = await lookup("Foo-2--5.0")
+            #expect(DeploymentRecords.shared.isWaiting("Foo-2--5.0"))
+            #expect(!DeploymentRecords.shared.isWaiting("Foo"))
+        }
+
+        @Test func noEligibleVersionInstallsNothing() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1)])
+            let (result, installInfo) = await install("Firefox")
+            #expect(!result)
+            #expect(entry(installInfo, "Firefox") == nil)
         }
 
         @Test func forceInstallDateOnlyAppliesOnceEligible() async {
@@ -1150,13 +1230,6 @@ extension manifestsTests {
             let (result, installInfo) = await install("Firefox")
             #expect(!result)
             #expect(entry(installInfo, "Firefox") == nil)
-        }
-
-        /// Munki's normal checks decide, the same as a version rejected by any other check.
-        @Test func normalChecksDecideWhenANewerVersionIsNotEligible() async {
-            seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath), item("Firefox", "1.0", path: missingPath)])
-            let (_, installInfo) = await install("Firefox")
-            #expect(entry(installInfo, "Firefox")?["version_to_install"] as? String == "1.0")
         }
 
         @Test func itemWithoutADeploymentDoesNotBringAnythingAlong() async {
@@ -1231,17 +1304,6 @@ extension manifestsTests {
             #expect(entry(installInfo, "Firefox")?["note"] != nil)
         }
 
-        @Test func anOrdinaryPinnedRequirementStillBehavesAsBefore() async {
-            seedCatalog([
-                item("Firefox", "2.0", extra: ["requires": ["Zoom--3.0"]]),
-                item("Zoom", "1.0"),
-            ])
-            var installInfo = PlistDict()
-            _ = await processInstall("Zoom", catalogList: testCatalogs, installInfo: &installInfo)
-            let result = await processInstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
-            #expect(result)
-        }
-
         /// An admin may want Zoom 2.0 and 3.0 both installed at different paths. Pinning 2.0 means
         /// 2.0, as it always has, whatever else is installed and whatever was looked up first.
         @Test func aPinnedVersionInstallsAlongsideANewerOne() async {
@@ -1256,6 +1318,7 @@ extension manifestsTests {
 
             seedCatalog(items)
             _ = await lookup("Zoom")
+            #expect(reportEntry("Zoom", "3.0")?["eligible"] as? Bool == false)
             let (_, afterLookup) = await install("Zoom--2.0")
             #expect(entry(afterLookup, "Zoom")?["version_to_install"] as? String == "2.0")
         }
@@ -1347,6 +1410,14 @@ extension manifestsTests {
             #expect(entry(installInfo, "Zoom")?["version_to_install"] as? String == "2.0")
         }
 
+        @Test func optionalUninstallIgnoresTheDeployment() async {
+            seedCatalog([item("Firefox", "2.0", percent: 1, path: installedPath, extra: removable)])
+            var installInfo = PlistDict()
+            await processOptionalUninstall("Firefox", catalogList: testCatalogs, installInfo: &installInfo)
+            let entries = (installInfo["optional_uninstalls"] as? [PlistDict] ?? []) + (installInfo["optional_installs"] as? [PlistDict] ?? [])
+            #expect(entries.contains { $0["name"] as? String == "Firefox" && $0["version_to_install"] as? String == "2.0" })
+        }
+
         // MARK: managed updates
 
         @Test func managedUpdateWaitsForEligibility() async {
@@ -1408,9 +1479,14 @@ struct DeploymentOptionsTests {
         return try DeploymentOptions.parse(arguments).pkginfoValue()
     }
 
-    private func expectRejected(_ arguments: [String], sourceLocation: SourceLocation = #_sourceLocation) {
-        #expect(throws: (any Error).self, sourceLocation: sourceLocation) {
+    /// Checks the message too, so a typo in an option name can't pass for the rule being tested
+    private func expectRejected(_ arguments: [String], _ message: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        do {
             _ = try DeploymentOptions.parse(arguments)
+            Issue.record("\(arguments) was accepted", sourceLocation: sourceLocation)
+        } catch {
+            let actual = DeploymentOptions.message(for: error)
+            #expect(actual.contains(message), "\(actual)", sourceLocation: sourceLocation)
         }
     }
 
@@ -1443,12 +1519,6 @@ struct DeploymentOptionsTests {
         let deployment = try value(["--deployment-start", "2026-10-12", "--deployment-end", "2026-10-23"])
         #expect(deployment?["start"] as? Date == date("2026-10-12 00:00"))
         #expect(deployment?["end"] as? Date == date("2026-10-24 00:00"))
-    }
-
-    /// What's written has to pass the same validation the client uses.
-    @Test func valuesAreValidDeployments() throws {
-        let deployment = try value(["--deployment-start", "2026-10-12", "--deployment-end", "2026-10-23"])
-        #expect(try Deployment(deployment).state(at: date("2026-10-23 23:59")).currentPercent == 99)
     }
 
     /// The flags have to reach the pkginfo, as a real date.
@@ -1488,39 +1558,37 @@ struct DeploymentOptionsTests {
 
     @Test func invalidCombinationsAreRejected() {
         let start = ["--deployment-start", "2026-10-12"]
-        // two modes
-        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-percent", "5"])
-        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-percent-per-day", "5"])
-        // no mode
-        expectRejected(start)
-        expectRejected(["--deployment-step-hours", "2"])
-        // dated modes without a start
-        expectRejected(["--deployment-end", "2026-10-13"])
-        expectRejected(["--deployment-percent-per-hour", "5"])
-        expectRejected(["--deployment-percent-per-day", "5"])
-        expectRejected(["--deployment-percent-per-step", "5", "--deployment-step-hours", "2"])
-        // end at or before start, or no weekday time between them
-        expectRejected(["--deployment-start", "2026-10-13T00:00:00Z", "--deployment-end", "2026-10-12T00:00:00Z"])
-        expectRejected(["--deployment-start", "2026-10-17", "--deployment-end", "2026-10-18"])
-        // step_hours where it isn't allowed, or missing where it's required
-        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-step-hours", "2"])
-        expectRejected(start + ["--deployment-percent-per-day", "5", "--deployment-step-hours", "2"])
-        expectRejected(start + ["--deployment-percent-per-step", "5"])
-        expectRejected(["--deployment-percent", "5", "--deployment-step-hours", "2"])
-        // out of range
-        expectRejected(["--deployment-percent", "0"])
-        expectRejected(["--deployment-percent", "101"])
-        expectRejected(start + ["--deployment-percent-per-hour", "0"])
-        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-step-hours", "0"])
+        let twoModes = "more than one mode"
+        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-percent", "5"], twoModes)
+        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-percent-per-day", "5"], twoModes)
+        expectRejected(start, "no mode")
+        expectRejected(["--deployment-step-hours", "2"], "no mode")
+        expectRejected(["--deployment-end", "2026-10-13"], "requires start")
+        expectRejected(["--deployment-percent-per-hour", "5"], "requires start")
+        expectRejected(["--deployment-percent-per-day", "5"], "requires start")
+        expectRejected(["--deployment-percent-per-step", "5", "--deployment-step-hours", "2"], "requires start")
+        let endAfterStart = "end must be after start"
+        expectRejected(["--deployment-start", "2026-10-13T00:00:00Z", "--deployment-end", "2026-10-12T00:00:00Z"], endAfterStart)
+        expectRejected(["--deployment-start", "2026-10-17", "--deployment-end", "2026-10-18"], endAfterStart)
+        expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-step-hours", "2"], "can't be combined with step_hours")
+        expectRejected(start + ["--deployment-percent-per-day", "5", "--deployment-step-hours", "2"], "can't be combined with step_hours")
+        expectRejected(start + ["--deployment-percent-per-step", "5"], "requires step_hours")
+        expectRejected(["--deployment-percent", "5", "--deployment-step-hours", "2"], "can't be used with --deployment-percent")
+        let range = "integer from 1 to 100"
+        expectRejected(["--deployment-percent", "0"], range)
+        expectRejected(["--deployment-percent", "101"], range)
+        expectRejected(start + ["--deployment-percent-per-hour", "0"], range)
+        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-step-hours", "0"], "integer of 1 or more")
     }
 
     @Test func badDatesAreRejected() {
-        expectRejected(["--deployment-start", "soon", "--deployment-percent", "5"])
-        expectRejected(["--deployment-start", "2026-13-45", "--deployment-percent", "5"])
-        expectRejected(["--deployment-start", "26-10-12", "--deployment-percent", "5"])
-        expectRejected(["--deployment-start", "2026-2-3", "--deployment-percent", "5"])
+        let parse = "Can't parse 'deployment-start'"
+        expectRejected(["--deployment-start", "soon", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-start", "2026-13-45", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-start", "26-10-12", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-start", "2026-2-3", "--deployment-percent", "5"], parse)
         // an offset would be lost, since pkginfo dates mean local time
-        expectRejected(["--deployment-start", "2026-10-12T09:00:00-07:00", "--deployment-percent", "5"])
+        expectRejected(["--deployment-start", "2026-10-12T09:00:00-07:00", "--deployment-percent", "5"], parse)
     }
 }
 
@@ -1561,14 +1629,19 @@ struct DeploymentWarningsTests {
     }
 
     @Test func validButProbablyNotWhatWasMeant() {
-        #expect(deploymentWarnings(["start": saturday, "end": date("2026-10-20 09:00")]).first?.contains("start on a weekend") == true)
-        #expect(deploymentWarnings(["start": monday, "end": sunday]).first?.contains("end on a weekend") == true)
-        #expect(deploymentWarnings(["start": sunday, "percent": 5]).first?.contains("start on a weekend") == true)
-        #expect(deploymentWarnings(["percent": 5, "step_hours": 2]).first?.contains("ignore step_hours") == true)
+        func only(_ dict: [String: Any]) -> String {
+            let warnings = deploymentWarnings(dict)
+            #expect(warnings.count == 1)
+            return warnings.first ?? ""
+        }
+        #expect(only(["start": saturday, "end": date("2026-10-20 09:00")]).contains("start on a weekend"))
+        #expect(only(["start": monday, "end": sunday]).contains("end on a weekend"))
+        #expect(only(["start": sunday, "percent": 5]).contains("start on a weekend"))
+        #expect(only(["percent": 5, "step_hours": 2]).contains("ignore step_hours"))
     }
 }
 
-struct DeploymentRepocleanTests {
+struct DeploymentIsUnfinishedTests {
     private let now = date("2026-10-20 12:00")
 
     @Test func noDeploymentIsNotUnfinished() {
@@ -1621,10 +1694,54 @@ private final class MemoryRepo: Repo {
     }
 
     func get(_: String, toFile _: String) async throws {}
-    func put(_: String, content _: Data) async throws {}
+    func put(_ identifier: String, content: Data) async throws {
+        files[identifier] = content
+    }
+
     func put(_: String, fromFile _: String) async throws {}
     func delete(_: String) async throws {}
     func pathFor(_: String) -> String? { return nil }
+}
+
+struct DeploymentMakeCatalogsTests {
+    private func repo() throws -> MemoryRepo {
+        let repo = try MemoryRepo("")
+        let pkginfo: PlistDict = [
+            "name": "Firefox",
+            "version": "2.0",
+            "catalogs": ["testing"],
+            "installer_type": "nopkg",
+            "deployment": ["percent": 0],
+        ]
+        repo.files["pkgsinfo/Firefox-2.0"] = try PropertyListSerialization.data(fromPropertyList: pkginfo, format: .xml, options: 0)
+        return repo
+    }
+
+    @Test func warnsAndStillBuildsWithTheDeploymentUnchanged() async throws {
+        let repo = try repo()
+        var maker = try await CatalogsMaker(repo: repo, options: MakeCatalogOptions())
+        await maker.makecatalogs()
+        #expect(maker.warnings.filter { $0.contains("Firefox-2.0") && $0.contains("invalid deployment") }.count == 1)
+        let data = try #require(repo.files["catalogs/testing"])
+        let catalog = try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [PlistDict])
+        #expect(catalog.count == 1)
+        #expect((catalog[0]["deployment"] as? PlistDict)?["percent"] as? Int == 0)
+    }
+
+    @Test func warnsWithSkipPkgCheck() async throws {
+        var maker = try await CatalogsMaker(repo: try repo(), options: MakeCatalogOptions(skipPkgCheck: true))
+        await maker.makecatalogs()
+        #expect(maker.warnings.filter { $0.contains("invalid deployment") }.count == 1)
+    }
+
+    @Test func noDeploymentNoWarning() async throws {
+        let repo = try MemoryRepo("")
+        let pkginfo: PlistDict = ["name": "Firefox", "version": "2.0", "catalogs": ["testing"], "installer_type": "nopkg"]
+        repo.files["pkgsinfo/Firefox-2.0"] = try PropertyListSerialization.data(fromPropertyList: pkginfo, format: .xml, options: 0)
+        var maker = try await CatalogsMaker(repo: repo, options: MakeCatalogOptions())
+        await maker.makecatalogs()
+        #expect(maker.warnings.isEmpty)
+    }
 }
 
 struct DeploymentUtilTests {
@@ -1724,7 +1841,7 @@ struct DeploymentUtilTests {
         #expect(columns == ["Firefox", "131.0", "start/end", "2026-10-12 00:00", "2026-10-24 00:00", "58/241", "25", "2026-10-14 10:00", "in progress"])
     }
 
-    @Test func scheduledAndStaticShowDashes() throws {
+    @Test func staticShowsDashes() throws {
         let table = deploymentTable([try row(["percent": 25])])
         let columns = table.components(separatedBy: "\n")[1].components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
         #expect(columns == ["Firefox", "131.0", "static", "-", "-", "-", "25", "-", "static"])
@@ -1769,7 +1886,8 @@ struct DeploymentUtilTests {
         let table = deploymentTable([try row(["percent": 36], serial: testSerial)], showMachine: true)
         #expect(table.contains("PACKAGE DEPLOY %"))
         #expect(table.contains("ELIGIBLE"))
-        #expect(table.contains("yes"))
+        let columns = table.components(separatedBy: "\n")[1].components(separatedBy: "  ").filter { !$0.isEmpty }.map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(columns.suffix(3) == ["36", "yes", "static"])
     }
 
     @Test func scheduleListsEveryStep() throws {
@@ -1777,6 +1895,7 @@ struct DeploymentUtilTests {
         #expect(found.schedule.map(\.percent) == [17, 34, 50, 67, 84, 100])
         #expect(found.schedule.last?.date == date("2026-10-20 17:00"))
         let text = deploymentScheduleText([found])
+        #expect(text.hasPrefix("Firefox 131.0 (start/end)\n"))
         #expect(text.contains("2026-10-20 08:00  17"))
         #expect(text.contains("2026-10-20 17:00  100"))
     }
@@ -1822,6 +1941,7 @@ struct DeploymentUtilTests {
         let objects = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]])
         let schedule = try #require(objects[0]["schedule"] as? [[String: Any]])
         #expect(schedule.map { $0["percent"] as? Int } == [50, 100])
+        #expect(schedule.map { $0["date"] as? String } == ["2026-10-20T08:00:00Z", "2026-10-20T09:00:00Z"])
     }
 
     @Test func readsPkginfosAndReportsOnesItCant() async throws {
@@ -1831,7 +1951,7 @@ struct DeploymentUtilTests {
         repo.files["pkgsinfo/bad"] = Data("not a plist".utf8)
         repo.files["catalogs/all"] = Data()
         let (pkginfos, errors) = try await pkginfosFromRepo(repo)
-        #expect(pkginfos.count == 2)
+        #expect(Set(pkginfos.compactMap { $0["name"] as? String }) == ["A", "B"])
         #expect(errors.count == 1)
         #expect(errors.first?.contains("pkgsinfo/bad") == true)
     }

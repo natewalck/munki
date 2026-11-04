@@ -615,6 +615,7 @@
 		D3E1B0272F90000000DE0001 /* deploymentutillib.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1B0262F90000000DE0001 /* deploymentutillib.swift */; };
 		D3E1B0282F90000000DE0001 /* deploymentutillib.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E1B0262F90000000DE0001 /* deploymentutillib.swift */; };
 		D3E1BF012F90000000DE0001 /* dateutils.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D66AD32D2DBBED009EF807 /* dateutils.swift */; };
+		D3E1BF022F90000000DE0001 /* makecatalogslib.swift in Sources */ = {isa = PBXBuildFile; fileRef = C013643B2C2DC529008DB215 /* makecatalogslib.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2371,6 +2372,7 @@
 				C0684E7E2DC7C3850091E774 /* osutils.swift in Sources */,
 				C0684E7B2DC7BF720091E774 /* munkihash.swift in Sources */,
 				D3E1A0022F90000000DE0001 /* deployment.swift in Sources */,
+				D3E1BF022F90000000DE0001 /* makecatalogslib.swift in Sources */,
 				D3E1B0282F90000000DE0001 /* deploymentutillib.swift in Sources */,
 				C0684E7A2DC7BF590091E774 /* scriptutils.swift in Sources */,
 				C058EF2B2DCD11F2002775E0 /* tempfileutils.swift in Sources */,
