@@ -85,6 +85,10 @@ private func strictInteger(_ value: Any?) -> Int? {
         }
         return number.intValue
     #else
+        // CFNumberIsFloatType isn't available here. `<true/>` already fails `as? Int`.
+        guard let number = value as? NSNumber, !["d", "f"].contains(String(cString: number.objCType)) else {
+            return nil
+        }
         return value as? Int
     #endif
 }
