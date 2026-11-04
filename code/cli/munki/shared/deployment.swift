@@ -17,7 +17,7 @@
 //  limitations under the License.
 
 // Schedule and hash logic for pkginfo `deployment` dicts.
-// See docs/deployment_design.md, sections 1-3.
+// See docs/deployment/deployment_design.md, sections 1-3.
 //
 // This file is built into makecatalogs on Linux, so it can only depend on
 // Foundation and shared/munkihash.swift.
