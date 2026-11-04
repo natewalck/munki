@@ -382,7 +382,7 @@ func deploymentWarnings(_ value: Any?) -> [String] {
     if let start = dict["start"] as? Date, isWeekend(wholeSeconds(start)) {
         warnings.append("has a deployment start on a weekend, which clients treat as the following Monday 00:00")
     }
-    // Saturday 00:00 is the end of Friday, which a date-only --deployment-end writes
+    // Saturday 00:00 is how to write the end of Friday
     if let end = dict["end"] as? Date, isWeekend(wholeSeconds(end)), wholeSeconds(end) != saturdayMidnight(wholeSeconds(end)) {
         warnings.append("has a deployment end on a weekend, which clients treat as the preceding Saturday 00:00")
     }

@@ -63,7 +63,7 @@ struct MSUConfigOptions: ParsableArguments {
     var id: String = ""
 
     @Option(name: .long,
-            help: ArgumentHelp("Number from 1 to 100 to use as this machine's deploy_percent for every item, for this run only. Has no effect on what --installonly installs, since it doesn't check for updates.", valueName: "n"))
+            help: ArgumentHelp("Number from 1 to 100 to use as this machine's deploy_percent for every item, for this run only.", valueName: "n"))
     var deployPercent: Int? = nil
 
     @Flag(name: .long,

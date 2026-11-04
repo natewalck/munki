@@ -260,7 +260,7 @@ Each flag sets one key in the pkginfo's `deployment` dict:
 | `--deployment-percent <n>` | `percent` (static mode) | optional |
 | `--deployment-step-hours <n>` | `step_hours` (start/end and percent per step only) | yes |
 
-Dates take a date and time (`yyyy-mm-ddThh:mm:ssZ`), or a date alone (`yyyy-mm-dd`). Other time zone offsets are rejected, because pkginfo dates mean local time. A date-only `--deployment-start` means 00:00 that day. A date-only `--deployment-end` means the end of that day, so `--deployment-end 2026-10-23` is written as `2026-10-24T00:00:00Z`.
+Dates use the format `yyyy-mm-ddThh:mm:ssZ`, the same as `--force_install_after_date`. Other formats are rejected, including a date alone and other time zone offsets, because pkginfo dates mean local time.
 
 Pick one mode per pkginfo. If the flags would create an invalid `deployment` (anything listed under "Invalid" below), or use `--deployment-step-hours` with `--deployment-percent`, the tool exits with an error and doesn't write a pkginfo.
 
@@ -270,7 +270,7 @@ Pick one mode per pkginfo. If the flags would create an invalid `deployment` (an
 
 - **Invalid (no machine is eligible):** more than one mode, no mode (e.g. only `start`), a dated mode without `start`, an end at or before the start (including a schedule with no weekday time between them), a `percent` / `percent_per_hour` / `percent_per_day` / `percent_per_step` outside 1–100, a `step_hours` that isn't an `<integer>` of 1 or more, a `step_hours` on percent per hour or percent per day, or a `percent_per_step` without `step_hours`.
 - **Valid, but probably not what was meant:**
-  - A start or end date on a weekend. The client moves a weekend start to Monday 00:00 and a weekend end to Saturday 00:00 (the end of Friday). An end of exactly Saturday 00:00 doesn't warn, since that's what a date-only `--deployment-end` on a Friday writes.
+  - A start or end date on a weekend. The client moves a weekend start to Monday 00:00 and a weekend end to Saturday 00:00 (the end of Friday). An end of exactly Saturday 00:00 doesn't warn, since that's how to write the end of Friday.
   - A `step_hours` on a static `percent`. The client ignores it.
 
 ### Cleaning up: `repoclean`

@@ -1505,7 +1505,7 @@ struct DeploymentOptionsTests {
         #expect(startEnd["step_hours"] as? Int == 2)
         #expect(startEnd.count == 3)
 
-        let start = "2026-10-12"
+        let start = "2026-10-12T00:00:00Z"
         #expect(try value(["--deployment-start", start, "--deployment-percent-per-hour", "10"])?["percent_per_hour"] as? Int == 10)
         #expect(try value(["--deployment-start", start, "--deployment-percent-per-day", "20"])?["percent_per_day"] as? Int == 20)
         let perStep = try value(["--deployment-start", start, "--deployment-percent-per-step", "10", "--deployment-step-hours", "24"])
@@ -1513,12 +1513,6 @@ struct DeploymentOptionsTests {
         #expect(perStep?["step_hours"] as? Int == 24)
         #expect(try value(["--deployment-percent", "5"])?["percent"] as? Int == 5)
         #expect(try value(["--deployment-percent", "5", "--deployment-start", start])?["start"] as? Date == date("2026-10-12 00:00"))
-    }
-
-    @Test func dateAloneMeansStartOrEndOfThatDay() throws {
-        let deployment = try value(["--deployment-start", "2026-10-12", "--deployment-end", "2026-10-23"])
-        #expect(deployment?["start"] as? Date == date("2026-10-12 00:00"))
-        #expect(deployment?["end"] as? Date == date("2026-10-24 00:00"))
     }
 
     /// The flags have to reach the pkginfo, as a real date.
@@ -1529,7 +1523,7 @@ struct DeploymentOptionsTests {
             dmg: .parse([]),
             pkg: .parse([]),
             force: .parse([]),
-            deployment: .parse(["--deployment-start", "2026-10-12", "--deployment-percent-per-day", "10"]),
+            deployment: .parse(["--deployment-start", "2026-10-12T00:00:00Z", "--deployment-percent-per-day", "10"]),
             installs: .parse([]),
             type: .parse(["--nopkg"]),
             other: .parse([]),
@@ -1557,19 +1551,19 @@ struct DeploymentOptionsTests {
     }
 
     @Test func invalidCombinationsAreRejected() {
-        let start = ["--deployment-start", "2026-10-12"]
+        let start = ["--deployment-start", "2026-10-12T00:00:00Z"]
         let twoModes = "more than one mode"
-        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-percent", "5"], twoModes)
+        expectRejected(start + ["--deployment-end", "2026-10-13T00:00:00Z", "--deployment-percent", "5"], twoModes)
         expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-percent-per-day", "5"], twoModes)
         expectRejected(start, "no mode")
         expectRejected(["--deployment-step-hours", "2"], "no mode")
-        expectRejected(["--deployment-end", "2026-10-13"], "requires start")
+        expectRejected(["--deployment-end", "2026-10-13T00:00:00Z"], "requires start")
         expectRejected(["--deployment-percent-per-hour", "5"], "requires start")
         expectRejected(["--deployment-percent-per-day", "5"], "requires start")
         expectRejected(["--deployment-percent-per-step", "5", "--deployment-step-hours", "2"], "requires start")
         let endAfterStart = "end must be after start"
         expectRejected(["--deployment-start", "2026-10-13T00:00:00Z", "--deployment-end", "2026-10-12T00:00:00Z"], endAfterStart)
-        expectRejected(["--deployment-start", "2026-10-17", "--deployment-end", "2026-10-18"], endAfterStart)
+        expectRejected(["--deployment-start", "2026-10-17T00:00:00Z", "--deployment-end", "2026-10-18T00:00:00Z"], endAfterStart)
         expectRejected(start + ["--deployment-percent-per-hour", "5", "--deployment-step-hours", "2"], "can't be combined with step_hours")
         expectRejected(start + ["--deployment-percent-per-day", "5", "--deployment-step-hours", "2"], "can't be combined with step_hours")
         expectRejected(start + ["--deployment-percent-per-step", "5"], "requires step_hours")
@@ -1578,15 +1572,15 @@ struct DeploymentOptionsTests {
         expectRejected(["--deployment-percent", "0"], range)
         expectRejected(["--deployment-percent", "101"], range)
         expectRejected(start + ["--deployment-percent-per-hour", "0"], range)
-        expectRejected(start + ["--deployment-end", "2026-10-13", "--deployment-step-hours", "0"], "integer of 1 or more")
+        expectRejected(start + ["--deployment-end", "2026-10-13T00:00:00Z", "--deployment-step-hours", "0"], "integer of 1 or more")
     }
 
     @Test func badDatesAreRejected() {
         let parse = "Can't parse 'deployment-start'"
         expectRejected(["--deployment-start", "soon", "--deployment-percent", "5"], parse)
-        expectRejected(["--deployment-start", "2026-13-45", "--deployment-percent", "5"], parse)
-        expectRejected(["--deployment-start", "26-10-12", "--deployment-percent", "5"], parse)
-        expectRejected(["--deployment-start", "2026-2-3", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-start", "2026-13-45T00:00:00Z", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-start", "2026-10-12", "--deployment-percent", "5"], parse)
+        expectRejected(["--deployment-end", "2026-10-12", "--deployment-start", "2026-10-12T00:00:00Z"], "Can't parse 'deployment-end'")
         // an offset would be lost, since pkginfo dates mean local time
         expectRejected(["--deployment-start", "2026-10-12T09:00:00-07:00", "--deployment-percent", "5"], parse)
     }
@@ -1622,7 +1616,7 @@ struct DeploymentWarningsTests {
         #expect(deploymentWarnings("not a dictionary").count == 1)
     }
 
-    /// A date-only end on a Friday is written as Saturday 00:00, which clients leave as it is.
+    /// Saturday 00:00 is how to write the end of Friday, and clients leave it as it is.
     @Test func saturdayMidnightEndIsNotWorthAWarning() {
         #expect(deploymentWarnings(["start": monday, "end": date("2026-10-24 00:00")]).isEmpty)
         #expect(deploymentWarnings(["start": monday, "end": date("2026-10-24 00:01")]).count == 1)

@@ -248,10 +248,10 @@ struct UnattendedInstallOptions: ParsableArguments {
 
 /// Options for a pkginfo's `deployment`, which rolls a version out to a growing percentage of machines
 struct DeploymentOptions: ParsableArguments {
-    @Option(help: ArgumentHelp("Date, in local time, the deployment starts. DATE format: yyyy-mm-ddThh:mm:ssZ or yyyy-mm-dd, which means 00:00 that day.", valueName: "date"))
+    @Option(help: ArgumentHelp("Date, in local time, the deployment starts. DATE format: yyyy-mm-ddThh:mm:ssZ", valueName: "date"))
     var deploymentStart: String? = nil
 
-    @Option(help: ArgumentHelp("Date, in local time, the deployment reaches 100%. DATE format: yyyy-mm-ddThh:mm:ssZ or yyyy-mm-dd, which means the end of that day.", valueName: "date"))
+    @Option(help: ArgumentHelp("Date, in local time, the deployment reaches 100%. DATE format: yyyy-mm-ddThh:mm:ssZ", valueName: "date"))
     var deploymentEnd: String? = nil
 
     @Option(help: ArgumentHelp("Percent of machines to add each weekday hour. Requires --deployment-start.", valueName: "n"))
@@ -269,22 +269,13 @@ struct DeploymentOptions: ParsableArguments {
     @Option(help: ArgumentHelp("Weekday hours each step lasts. Only for --deployment-end and --deployment-percent-per-step.", valueName: "n"))
     var deploymentStepHours: Int? = nil
 
-    /// Returns a date from an option. A date with no time means 00:00 that day,
-    /// or for an end date, the end of that day. Only a Z date is accepted, since
-    /// pkginfo dates mean local time and any other offset would be lost.
-    private func parseDate(_ text: String, optionName: String, endOfDay: Bool = false) throws -> Date {
-        if text.hasSuffix("Z"), let date = ISO8601DateFormatter().date(from: text) {
-            return date
-        }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd"
-        // the formatter also takes a two-digit year, which is the year 26
-        guard text.count == 10, let date = formatter.date(from: text) else {
+    /// Returns a date from an option. Only a Z date is accepted, since pkginfo dates
+    /// mean local time and any other offset would be lost.
+    private func parseDate(_ text: String, optionName: String) throws -> Date {
+        guard text.hasSuffix("Z"), let date = ISO8601DateFormatter().date(from: text) else {
             throw ValidationError("Can't parse '\(optionName)' into a date!")
         }
-        return endOfDay ? date.addingTimeInterval(24 * 60 * 60) : date
+        return date
     }
 
     /// Returns the value for the pkginfo's `deployment` key, or nil if no deployment options were given
@@ -294,7 +285,7 @@ struct DeploymentOptions: ParsableArguments {
             deployment["start"] = try parseDate(deploymentStart, optionName: "deployment-start")
         }
         if let deploymentEnd {
-            deployment["end"] = try parseDate(deploymentEnd, optionName: "deployment-end", endOfDay: true)
+            deployment["end"] = try parseDate(deploymentEnd, optionName: "deployment-end")
         }
         deployment["percent_per_hour"] = deploymentPercentPerHour
         deployment["percent_per_day"] = deploymentPercentPerDay
