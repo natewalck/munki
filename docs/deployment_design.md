@@ -1,12 +1,14 @@
 # Deployment (deploy percent) design
 
-**Branch:** `natewalck/deploypercent` (off `Munki7_4dev`)
+**Branch:** `deployment` (off `Munki7_5dev`)
 
-**Target:** Munki 7.x
+**Target:** Munki 7.5
 
 Roll a new pkginfo version out to a growing percentage of the fleet over time, instead of to every machine at once.
 
 The core mechanism: each machine has a `deploy_percent` calculated based on its serial number. A version with a `deployment` becomes available to a machine once the machine's `deploy_percent` meets the criteria of the deployment. Until then, Munki uses the next-highest version available to it. The project plan below describes this mechanism in detail.
+
+**A deployment only decides whether a version is available to a machine,** the same way `installable_condition` does. Once a version is available, Munki processes it as it always has, including `requires`, `update_for`, and install order. A pkginfo with no `deployment` behaves exactly as it did before this feature.
 
 ## 1. pkginfo schema
 
@@ -158,18 +160,17 @@ Every machine has two kinds of deploy_percent. Both are a number from 1 to 100, 
 | Used for | the `deploy_percent` predicate fact, which is also recorded in the report's `Conditions` | deciding whether the machine is eligible for an item's `deployment` |
 
 - **Identifier:** the serial number, falling back to `hardware_uuid` if there's no serial. If neither can be read (and no `DeployPercentOverride` pref is set), both values are set to 100, so the machine is in the last group and gets each version once a deployment reaches 100%.
-- **Hash:** SHA-256, so the result is stable across Munki versions.
+- **Hash:** the first 8 bytes of SHA-256 as a big-endian integer, so the result is stable across Munki versions. The machine value hashes the identifier, and the package value hashes `identifier:name`. This can't change once released, because that would move every machine to a different group in every running deployment.
 - **Why salt per item:** each item gets a different first group of machines, so the same machines don't get every new release first. The unsalted value gives admins one stable number per machine for predicates and reporting.
-- **Required packages follow the package that requires them:** when the machine is eligible for a gated version of Package A, the Package B version it requires installs even if the machine isn't eligible under Package B's own deployment. In every other case, including an older ungated Package A or Package B installed on its own, Package B follows its own deployment, hashed with its own name.
-- **`update_for` items don't follow:** the rule above only applies to `requires`. An `update_for` item always follows its own deployment, hashed with its own name.
-- **`DeployPercentOverride` pref** (in ManagedInstalls): replaces both values. The machine uses the pinned number for every item, with no per-item hashing. Admins can use it to decide who goes first, who goes last, or both:
+- **Each item follows its own deployment:** that includes items reached through `requires` or `update_for`, hashed with their own names. A deployment on Package A says nothing about Package B. See "Required packages" in section 4.
+- **`DeployPercentOverride` pref** (in ManagedInstalls): replaces both values. The machine uses the pinned number for every item, with no per-item hashing. A value outside 1–100 is ignored, with a warning. Admins can use it to decide who goes first, who goes last, or both:
   - **Go first:** a low number (e.g. 1) puts a machine at the front of every deployment, such as IT staff or testers who should catch problems early.
   - **Go last:** 100 puts a machine at the back of every deployment, such as VIPs or other sensitive machines that should only get a version once the rest of the fleet has it.
-- **`managedsoftwareupdate --deploy-percent <n>`:** overrides both values for that run only, the same way `--id` overrides ClientIdentifier for one run. It takes precedence over the `DeployPercentOverride` pref, and a value outside 1–100 is rejected.
+- **`managedsoftwareupdate --deploy-percent <n>`:** overrides both values for that run only, the same way `--id` overrides ClientIdentifier for one run. It takes precedence over the `DeployPercentOverride` pref, and a value outside 1–100 is rejected. It's accepted with `--checkonly` and `--installonly`, but only changes the result of a check, because `--installonly` installs what the last check found.
   - **`--deploy-percent 1`:** installs every version whose deployment has started, however low its current_deploy_percent.
   - **`--deploy-percent 100`:** skips every version whose deployment hasn't reached 100% yet.
   - **It doesn't install before a deployment's `start`.** Before start, current_deploy_percent is 0, so no value makes a machine eligible. That keeps the pause described in section 4 (moving `start` later) effective on every machine.
-  - **It doesn't persist.** The next run, including background `--auto` runs, uses the machine's normal value again. Anything installed during the override stays installed, since Munki never downgrades because of a deployment. To keep a machine at the front or back permanently, use the `DeployPercentOverride` pref.
+  - **It doesn't persist.** The next run, including background `--auto` runs, uses the machine's normal value again. Anything installed during the override stays installed, because a deployment doesn't remove anything. To keep a machine at the front or back permanently, use the `DeployPercentOverride` pref.
 - **Eligibility:** a machine is eligible for a version when its package_deploy_percent is at or below that version's current_deploy_percent. A version with no `deployment` is always eligible, assuming there are no other conditionals applied.
 
 ## 4. Client behavior
@@ -186,32 +187,38 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 
 - **Installed version is the newest eligible version:** no update is offered until the machine becomes eligible for the new version.
 - **A newer version without a `deployment` is available:** e.g. 1.0 is installed, 1.1 has no `deployment`, and 1.2 is gated. The machine updates to 1.1 now and to 1.2 when eligible.
-- **Machine already has a version it's no longer eligible for:** e.g. an admin pauses a deployment by moving its dates later or lowering a static `percent` after some machines already installed it. Those machines keep the version they have. Munki never downgrades because of a deployment.
+- **Machine already has a version it's no longer eligible for:** e.g. an admin pauses a deployment by moving its dates later or lowering a static `percent` after some machines already installed it. Munki's normal checks decide what happens next, the same as if the newer version had failed any other check. A newer version at the same path is seen as already installed, so nothing changes. Versions at different paths are independent installs, so an older one can be installed alongside the newer one.
 
 ### Optional installs (Managed Software Center)
 
 - **Not installed, an older eligible version exists:** MSC shows and offers the older version.
 - **Not installed, no eligible version exists:** the item doesn't appear in MSC until the machine becomes eligible, the same as an item whose every version fails `installable_condition`.
-- **Already installed:** the update to the gated version isn't offered until the machine is eligible. After that it shows up as a normal pending update.
+- **Already installed:** the update to the gated version isn't offered until the machine is eligible, and the installed version can still be uninstalled. After that it shows up as a normal pending update.
+- **`ShowOptionalInstallsForHigherOSVersions`:** the "Requires macOS X" notice for a version the machine can't run yet doesn't appear until the machine is eligible for that version. That lookup skips the minimum OS check, not the deployment, so it also writes a `Deployments` report entry.
 - **Users can't get a gated version early:** MSC only offers versions the machine is eligible for. To give a machine new versions sooner, an admin sets its `DeployPercentOverride` pref to a low number, e.g. 1.
 
 ### Other interactions
 
 - **Existing conditions are checked first:** a version must pass every existing check (`minimum_munki_version`, `minimum_os_version` / `maximum_os_version`, `supported_architectures`, and `installable_condition`) before its `deployment` is evaluated. If any of them fails, the deployment is never evaluated: Munki moves on to the next-highest version, nothing is logged as not eligible, and no `Deployments` report entry is written. This lets admins stop an install with a condition unrelated to the deployment, and means "not eligible" always means "this machine could install it, it's just not its turn yet."
 - **`managed_uninstalls`:** not affected. Removals are never gated.
+- **`autoremove`:** only counts from versions the machine is eligible for, so `autoremove` on a gated 2.0 doesn't remove an installed 1.0 until the machine is eligible for 2.0. An item waiting on a deployment is never auto-removed.
 - **`force_install_after_date` on a gated version:** only applies once the machine is eligible. If the date has already passed by then, the install is forced right away.
-- **Required packages:** see "Required packages follow the package that requires them" in section 3.
+- **Required packages:** processed the way Munki always has, using whichever versions are available to the machine:
+  - If eligible Package A says `requires Package B` and the machine isn't eligible for Package B 2.0, Package B 1.0 is used if it's available.
+  - If no version of Package B is available, because its deployment excludes this machine, hasn't reached `start`, or is invalid, Package A waits. It's logged at info level, with no warning or problem item, and installs once Package B is available.
+  - Munki's existing rule for pinned requirements still applies: once any version of Package B has been processed, `requires Package B-2.0` counts as met, so the first one processed wins.
 
 ### Predicates, logging, and reporting
 
-- **Predicates:** a `deploy_percent` fact is available in `conditional_items` and `installable_condition`. It holds the machine (unsalted) deploy_percent, or the pref if one is set. It's added in `generatePredicateInfo()` alongside the other computed conditions (e.g. `machine_type`), so it's recorded in the report's existing `Conditions` dict and nowhere else.
+- **Predicates:** a `deploy_percent` fact is available in `conditional_items` and `installable_condition`. It holds the machine (unsalted) deploy_percent, or the override if one is in effect. It's added in `generatePredicateInfo()` alongside the other computed conditions (e.g. `machine_type`), so it's recorded in the report's existing `Conditions` dict and nowhere else.
 - **Logging:** each version the machine isn't eligible for is logged at info level, e.g. `Firefox 131.0 not eligible: package_deploy_percent 42 > current_deploy_percent 25 (next step 2026-10-14 10:00)`. A machine not being eligible for a version is the feature working as intended, so it's never logged as a warning or error:
-  - When an older version is available, the fallback happens without any warning (Munki already only logs rejected versions at debug level when it finds one that works).
+  - When an older version is available, the fallback happens without any warning (Munki doesn't log the versions it rejected when it finds one that works).
   - When no version is available (e.g. the item's first release is gated), the usual "Could not process item … No pkginfo found in catalogs" warning is suppressed if not being eligible under a deployment is the only reason. The info-level not-eligible line is logged instead. If anything else also rejected a version (e.g. `minimum_os_version`), the existing warnings are logged as they are today.
-  - Only an invalid `deployment` is logged as an error, since that's a real misconfiguration.
+  - Only an invalid `deployment` is logged as an error, since that's a real misconfiguration. The usual "Could not process item" warning is skipped there too, since the error already says what's wrong.
+  - An item waiting on a required item that isn't available is logged at info level, as described under "Required packages" above.
 - **Overrides are logged:** when the `DeployPercentOverride` pref or `--deploy-percent` is in effect, each run logs it once at info level, e.g. `deploy_percent overridden to 1 by DeployPercentOverride preference`.
 - **ManagedInstallReport** gets two new top-level keys:
-  - `Deployments`: one entry for every item version evaluated against a `deployment`, so admins can see the machine's package_deploy_percent for each pending deployment. (The machine's unsalted `deploy_percent` is already in `Conditions`.)
+  - `Deployments`: one entry for every item version evaluated against a `deployment`, so admins can see the machine's package_deploy_percent for each pending deployment. An invalid `deployment` has no entry, since it has no percents to report, and logs an error instead. (The machine's unsalted `deploy_percent` is already in `Conditions`.)
   - `DeployPercentOverride`: present only when an override is in effect, so admins can tell a pinned value from a hashed one. It's a dict with `value` (integer, the pinned number) and `source` (`preference` or `command_line`). When it's present, `deploy_percent` in `Conditions` and every `package_deploy_percent` in `Deployments` equal `value`.
 
     | Key | Type | Meaning |
@@ -220,9 +227,8 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
     | `version` | string | version with the `deployment` |
     | `package_deploy_percent` | integer | this machine's salted deploy_percent for this package |
     | `current_deploy_percent` | integer | the deployment's value right now |
-    | `eligible` | boolean | `package_deploy_percent` ≤ `current_deploy_percent`, or `true` when `required_by` is set |
+    | `eligible` | boolean | `package_deploy_percent` ≤ `current_deploy_percent` |
     | `next_step_date` | date | when current_deploy_percent next increases (absent for `static` deployments once started, and once at 100) |
-    | `required_by` | string | name of the eligible gated package that required this one, when that let it bypass its own deployment (absent otherwise) |
 
 ## 5. Admin tooling
 
@@ -231,14 +237,14 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 A `deployment` applies to a version in every catalog its pkginfo is in, so it isn't scoped to one catalog. Use catalogs for testing and add the deployment at promotion:
 
 1. Test the new version in your testing catalog with no `deployment`.
-2. When promoting it to production, add the `deployment` in the same edit that adds the production catalog.
+2. When promoting it to production, add the `deployment` in the same edit that adds the production catalog. This is a hand edit, since the flags below only apply when creating a pkginfo.
 
 > **Note:** once the pkginfo has a `deployment`, a testing machine that hasn't installed the version yet (including a newly set up one) follows the production schedule too. To keep testing machines from waiting, set their `DeployPercentOverride` pref to 1 so they're in the first group of every deployment.
 
 For a one-off run on a single machine, use `managedsoftwareupdate --deploy-percent` instead of changing the pref:
 
-- `sudo managedsoftwareupdate --deploy-percent 1` pulls in everything that's already rolling out, e.g. to confirm a fix on a specific Mac before its turn.
-- `sudo managedsoftwareupdate --deploy-percent 100` skips anything that's still rolling out, for that run only. The next background run goes back to the machine's normal value.
+- `sudo managedsoftwareupdate --checkonly --deploy-percent 1`, then `sudo managedsoftwareupdate --installonly`, pulls in everything that's already rolling out, e.g. to confirm a fix on a specific Mac before its turn. Run the install straight after: a check at the machine's normal value in between replaces what the first check found.
+- `sudo managedsoftwareupdate --checkonly --deploy-percent 100` skips anything that's still rolling out, for that run only. The next background run goes back to the machine's normal value.
 
 ### Creating a deployment: `makepkginfo` and `munkiimport`
 
@@ -254,24 +260,30 @@ Each flag sets one key in the pkginfo's `deployment` dict:
 | `--deployment-percent <n>` | `percent` (static mode) | optional |
 | `--deployment-step-hours <n>` | `step_hours` (start/end and percent per step only) | yes |
 
-Dates take a date and time, or a date alone. A date-only `--deployment-start` means 00:00 that day. A date-only `--deployment-end` means the end of that day, so `--deployment-end 2026-10-23` is written as `2026-10-24T00:00:00Z`.
+Dates take a date and time (`yyyy-mm-ddThh:mm:ssZ`), or a date alone (`yyyy-mm-dd`). Other time zone offsets are rejected, because pkginfo dates mean local time. A date-only `--deployment-start` means 00:00 that day. A date-only `--deployment-end` means the end of that day, so `--deployment-end 2026-10-23` is written as `2026-10-24T00:00:00Z`.
 
-Pick one mode per pkginfo. If the flags would create an invalid `deployment` (two modes, a dated mode without `--deployment-start`, or an end at or before the start), the tool exits with an error and doesn't write a pkginfo.
+Pick one mode per pkginfo. If the flags would create an invalid `deployment` (anything listed under "Invalid" below), or use `--deployment-step-hours` with `--deployment-percent`, the tool exits with an error and doesn't write a pkginfo.
 
 ### Checking deployments: `makecatalogs`
 
-`makecatalogs` prints a warning for each pkginfo whose `deployment` has a problem. It still builds the catalogs, so the admin sees the warning but the repo isn't blocked. Warnings:
+`makecatalogs` prints a warning for each pkginfo whose `deployment` has a problem, including with `--skip-pkg-check`. It still builds the catalogs and leaves the `deployment` unchanged, so the admin sees the warning but the repo isn't blocked. The catalog rebuilds in `munkiimport` and `repoclean` print these warnings too. Warnings:
 
 - **Invalid (no machine is eligible):** more than one mode, no mode (e.g. only `start`), a dated mode without `start`, an end at or before the start (including a schedule with no weekday time between them), a `percent` / `percent_per_hour` / `percent_per_day` / `percent_per_step` outside 1–100, a `step_hours` that isn't an `<integer>` of 1 or more, a `step_hours` on percent per hour or percent per day, or a `percent_per_step` without `step_hours`.
 - **Valid, but probably not what was meant:**
-  - A start or end date on a weekend. The client moves a weekend start to Monday 00:00 and a weekend end to Saturday 00:00 (the end of Friday).
+  - A start or end date on a weekend. The client moves a weekend start to Monday 00:00 and a weekend end to Saturday 00:00 (the end of Friday). An end of exactly Saturday 00:00 doesn't warn, since that's what a date-only `--deployment-end` on a Friday writes.
   - A `step_hours` on a static `percent`. The client ignores it.
+
+### Cleaning up: `repoclean`
+
+Machines not yet eligible for a version still need older ones, so `repoclean` always keeps a version with an unfinished `deployment` (`scheduled`, `in progress`, `static` below 100, or `invalid`), and it doesn't count toward `--keep`. It then keeps the newest `--keep` versions of everything else. A finished deployment counts as a normal version, a day after it finishes to allow for time zones.
+
+With the default of 2, versions 3.0 and 2.0 rolling out, and 1.0 and 0.9 with no `deployment`, all four are kept. A repo with no deployments is cleaned exactly as before.
 
 ### Seeing deployment status: `deploymentutil` (new tool)
 
 Lists every pkginfo in the repo that has a `deployment`, and shows where each one is right now.
 
-It connects to the repo the same way `makecatalogs` and `manifestutil` do, so it works with any repo plugin, not just repos on local disk. The repo comes from `--repo-url`, a repo path argument, or the `repo_url` admin pref, and the plugin from `--plugin` or the `plugin` admin pref (default `FileRepo`). It only reads the repo: `list("pkgsinfo")` to find pkginfos and `get("pkgsinfo/…")` to read each one, both of which every plugin implements.
+It connects to the repo the same way the other admin tools do, so it works with any repo plugin, not just repos on local disk. The repo comes from `--repo-url`, a repo path argument, or the `repo_url` admin pref, and the plugin from `--plugin` or the `plugin` admin pref (default `FileRepo`). It only reads the repo: `list("pkgsinfo")` to find pkginfos and `get("pkgsinfo/…")` to read each one, both of which every plugin implements.
 
 ```
 $ deploymentutil
@@ -281,7 +293,7 @@ Zoom       6.2.1    start/end  2026-10-20 09:00  2026-10-20 17:00  -       0    
 Slack      4.41     static     -                 -                 -       25       -                 static
 ```
 
-`CURRENT` is the deployment's current_deploy_percent. `STEP` is which step of the schedule it's on, out of the total.
+`CURRENT` is the deployment's current_deploy_percent. `STEP` is which step of the schedule it's on, out of the total. `MODE` is `start/end`, `per hour`, `per day`, `per step`, or `static`.
 
 By default it only shows deployments that still need attention: `scheduled`, `in progress`, `static` (below 100), and `invalid`. Finished deployments are hidden.
 
@@ -291,8 +303,8 @@ By default it only shows deployments that still need attention: `scheduled`, `in
 | `--plugin <name>` | repo plugin to connect with, overriding the `plugin` admin pref |
 | `--all` | also show finished (`complete`) deployments |
 | `--catalog <name>` | only show pkginfos in that catalog |
-| `--serial <serial>` | add `PACKAGE DEPLOY %` and `ELIGIBLE` columns showing where that machine falls, calculated the same way the client does |
-| `--schedule <name>` | print one item's full schedule: each step's time and its current_deploy_percent |
+| `--serial <serial>` | add `PACKAGE DEPLOY %` and `ELIGIBLE` columns showing where that machine falls, calculated the same way the client does. It can't see a machine's override. |
+| `--schedule <name>` | print one item's full schedule, for each of its versions with a `deployment`, including finished ones: each step's time and its current_deploy_percent. Exits with an error if there's no such deployment. |
 | `--json` | print JSON instead of a table |
 
 **Status values:**
@@ -308,7 +320,8 @@ By default it only shows deployments that still need attention: `scheduled`, `in
 **Notes:**
 
 - It reads the pkginfos, not the catalogs, so it's accurate even before `makecatalogs` has been run.
-- It shows each deployment on its own schedule. It doesn't show the required-package bypass from section 3, because that depends on what a particular machine has installed.
+- Dates are shown on the clock of the machine running it, so around a clock change a step can differ from what a client does for about an hour.
+- With a repo that needs mounting, `FileRepo` prints mount messages to stdout, which can end up in `--json` output.
 
 ## 6. Code touchpoints
 
@@ -316,21 +329,23 @@ By default it only shows deployments that still need attention: `scheduled`, `in
 |---|---|
 | Schedule, current_deploy_percent, and hash logic (pure functions, easy to test) | new `shared/deployment.swift` |
 | Version gating, as the last check in the chain after `installableConditionOK` | `shared/updatecheck/catalogs.swift` |
-| Letting a required package bypass its deployment when the requiring package's gated version is eligible | `shared/updatecheck/analyze.swift` |
+| Quieter handling when a deployment is the only reason an item or its requirement isn't available, and skipping the check for removals | `shared/updatecheck/analyze.swift` |
+| `autoremove` only counting from eligible versions | `getAutoRemovalItems()` in `shared/updatecheck/catalogs.swift` |
 | `deploy_percent` fact | `generatePredicateInfo()` in `shared/facts.swift` |
 | `DeployPercentOverride` pref | `shared/prefs.swift` |
 | `--deploy-percent` run-only override | `managedsoftwareupdate/msuoptions.swift` |
 | Report entries (`Deployments`, `DeployPercentOverride`) | `shared/updatecheck/updatecheck.swift` |
 | CLI flags | `shared/admin/pkginfoOptions.swift`, `pkginfolib.swift` |
-| Validation | `shared/admin/makecatalogslib.swift` |
-| `deploymentutil` | new `deploymentutil/` target (Package.swift + Xcode project), reusing `shared/deployment.swift` and connecting through `repoConnect(url:plugin:)` in `shared/munkirepo/RepoFactory.swift`; added to the tool lists in `code/tools/build_swift_munki.sh` and `code/tools/make_swift_munki_pkg.sh` so it ships with the admin tools |
+| Validation | `deploymentWarnings()` in `shared/deployment.swift`, called from `shared/admin/makecatalogslib.swift` |
+| Keeping unfinished deployments | `repoclean/repoclean.swift` |
+| `deploymentutil` | new `deploymentutil/` target (Xcode project, plus an exclude in Package.swift) and `shared/admin/deploymentutillib.swift`, reusing `shared/deployment.swift` and connecting through `repoConnect(url:plugin:)` in `shared/munkirepo/RepoFactory.swift`; added to the tool lists in `code/tools/build_swift_munki.sh` and `code/tools/make_swift_munki_pkg.sh` so it ships with the admin tools |
 | Unit tests | new `munkiCLItesting/deploymentTests.swift` |
 
 ## 7. Milestones
 
 1. Schedule and hash logic, with tests covering the strategy examples, partial hours, weekends, rounding, rate modes, `step_hours`, and hash stability.
-2. Client gating, including fallback and the required-package bypass.
+2. Client gating, including fallback.
 3. `DeployPercentOverride` pref, `--deploy-percent` flag, `deploy_percent` fact, logging, and report entries.
-4. `makepkginfo` / `munkiimport` flags and `makecatalogs` validation.
+4. `makepkginfo` / `munkiimport` flags, `makecatalogs` validation, and `repoclean`.
 5. `deploymentutil`.
-6. Docs and a PR to `munki/munki:Munki7_4dev`.
+6. Docs and a PR to `munki/munki:Munki7_5dev`.
