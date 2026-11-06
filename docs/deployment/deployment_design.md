@@ -266,7 +266,7 @@ Pick one mode per pkginfo. If the flags would create an invalid `deployment` (an
 
 ### Checking deployments: `makecatalogs`
 
-`makecatalogs` prints a warning for each pkginfo whose `deployment` has a problem, including with `--skip-pkg-check`. It still builds the catalogs and leaves the `deployment` unchanged, so the admin sees the warning but the repo isn't blocked. The catalog rebuilds in `munkiimport` and `repoclean` print these warnings too. Warnings:
+`makecatalogs` prints a warning for each pkginfo whose `deployment` has a problem, including with `--skip-pkg-check`. It still builds the catalogs and leaves the `deployment` unchanged, so the admin sees the warning but the repo isn't blocked. The catalog rebuilds in `munkiimport` and `repoclean` still only print errors, as they always have, so these warnings don't appear there. Warnings:
 
 - **Invalid (no machine is eligible):** more than one mode, no mode (e.g. only `start`), a dated mode without `start`, an end at or before the start (including a schedule with no weekday time between them), a `percent` / `percent_per_hour` / `percent_per_day` / `percent_per_step` outside 1–100, a `step_hours` that isn't an `<integer>` of 1 or more, a `step_hours` on percent per hour or percent per day, or a `percent_per_step` without `step_hours`.
 - **Valid, but probably not what was meant:**

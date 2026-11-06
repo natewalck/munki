@@ -450,9 +450,6 @@ private func performCatalogRebuild(repo: Repo) async throws {
     let makecatalogOptions = MakeCatalogOptions()
     var catalogsmaker = try await CatalogsMaker(repo: repo, options: makecatalogOptions)
     await catalogsmaker.makecatalogs()
-    for warning in catalogsmaker.warnings {
-        printStderr(warning)
-    }
     if !catalogsmaker.errors.isEmpty {
         for error in catalogsmaker.errors {
             printStderr(error)

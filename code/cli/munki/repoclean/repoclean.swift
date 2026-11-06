@@ -514,9 +514,6 @@ class RepoCleaner {
         do {
             var catalogsmaker = try await CatalogsMaker(repo: repo, options: options)
             await catalogsmaker.makecatalogs()
-            for warning in catalogsmaker.warnings {
-                printStderr(warning)
-            }
             if !catalogsmaker.errors.isEmpty {
                 print("\nThe following issues occurred while building catalogs:\n")
                 for error in catalogsmaker.errors {
