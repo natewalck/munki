@@ -53,8 +53,6 @@ class DeploymentRecords {
     var now = Date()
     /// versions already logged as not usable, since an item can be looked up many times in a run
     var logged = Set<String>()
-    /// items that can't be processed only because of a deployment
-    var waiting = Set<String>()
     /// entries for the report's Deployments key, by item name and version
     var reportEntries = [String: PlistDict]()
     /// --deploy-percent, for this run only
@@ -65,24 +63,8 @@ class DeploymentRecords {
     func reset() {
         now = Date()
         logged = []
-        waiting = []
         reportEntries = [:]
         commandLineDeployPercent = nil
-    }
-
-    /// The key for an item name, with no version on it
-    func key(_ name: String) -> String {
-        return (name as NSString).precomposedStringWithCanonicalMapping
-    }
-
-    /// The key for a name from a manifest or `requires`, which can have a path and a version
-    func key(manifestItem: String) -> String {
-        let itemName = (manifestItem as NSString).lastPathComponent
-        return key(nameAndVersion(itemName, onlySplitOnHyphens: true).0)
-    }
-
-    func isWaiting(_ manifestItem: String) -> Bool {
-        return waiting.contains(key(manifestItem: manifestItem))
     }
 }
 
@@ -372,7 +354,7 @@ func getAllItemsWithName(_ name: String, catalogList: [String]) -> [PlistDict] {
 /// that is supposed to be installed.
 /// Then filters against the removals list, which contains all the removals
 /// that have already been processed.
-func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) async -> [String] {
+func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) -> [String] {
     var autoremovalNames = [String]()
     for catalogName in catalogList {
         if let catalogDB = Catalogs.shared.get(catalogName),
@@ -398,21 +380,7 @@ func getAutoRemovalItems(installInfo: PlistDict, catalogList: [String]) async ->
     autoremovalNames = autoremovalNames.filter {
         !processedInstallsNames.contains($0) &&
             !managedInstallsNames.contains($0) &&
-            !processedUninstallsNames.contains($0) &&
-            !DeploymentRecords.shared.waiting.contains(DeploymentRecords.shared.key($0))
-    }
-
-    // a version's autoremove only counts once the machine is eligible for that version
-    let machine = await getMachineFacts()
-    autoremovalNames = autoremovalNames.filter { name in
-        catalogList.contains { catalogName in
-            let items = Catalogs.shared.get(catalogName)?["items"] as? [PlistDict] ?? []
-            return items.contains {
-                $0["name"] as? String == name &&
-                    $0["autoremove"] as? Bool ?? false &&
-                    evaluateDeployment($0, machine: machine).rejection == nil
-            }
-        }
+            !processedUninstallsNames.contains($0)
     }
 
     return autoremovalNames
@@ -640,11 +608,9 @@ func getItemDetail(
     catalogList: [String],
     version itemVersion: String = "",
     skipMinimumOSCheck: Bool = false,
-    suppressWarnings: Bool = false,
-    skipDeploymentCheck: Bool = false
+    suppressWarnings: Bool = false
 ) async -> PlistDict? {
     var rejectedItems = [String]()
-    var foundNotEligible = false
     let machine = await getMachineFacts()
     let records = DeploymentRecords.shared
 
@@ -772,21 +738,20 @@ func getItemDetail(
     }
 
     /// Returns a boolean to indicate if this machine can use the item under
-    /// its deployment, if any. Machines not yet eligible aren't an error, so
-    /// this doesn't add to the rejected_items list.
+    /// its deployment, if any. If not, also adds the failure reason to the
+    /// rejected_items list, the same as a failed installable_condition.
     func deploymentOK(_ item: PlistDict) -> Bool {
-        if skipDeploymentCheck {
-            return true
-        }
         let (rejection, reportEntry) = evaluateDeployment(item, machine: machine)
-        let entryKey = "\(item["name"] as? String ?? "") \(item["version"] as? String ?? "")"
+        let name = item["name"] as? String ?? ""
+        let version = item["version"] as? String ?? ""
+        let entryKey = "\(name) \(version)"
         if let reportEntry {
             records.reportEntries[entryKey] = reportEntry
         }
         guard let rejection else {
             return true
         }
-        foundNotEligible = true
+        rejectedItems.append("Rejected item \(name), version \(version) with deployment")
         if !records.logged.insert(entryKey).inserted {
             return false
         }
@@ -851,7 +816,6 @@ func getItemDetail(
                        deploymentOK(item)
                     {
                         display.debug1("Found \(item["name"] as? String ?? "<unknown>"), version \(item["version"] as? String ?? "<unknown>") in catalog \(catalogName)")
-                        records.waiting.remove(records.key(name))
                         return item
                     }
                 }
@@ -860,11 +824,6 @@ func getItemDetail(
     }
     // if we got this far, we didn't find it
     display.debug1("No applicable item found for name '\(name)'")
-    if foundNotEligible, rejectedItems.isEmpty {
-        records.waiting.insert(records.key(name))
-    } else {
-        records.waiting.remove(records.key(name))
-    }
     for reason in rejectedItems {
         if suppressWarnings {
             display.debug1(reason)

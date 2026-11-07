@@ -181,7 +181,7 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 
 - **Eligible for the newest version:** the machine installs the newest version directly, the same as if it had no `deployment`. It never installs an older version first.
 - **Not eligible yet, an older eligible version exists:** the machine installs the older version now. Once it becomes eligible for the new version, it sees that as a normal update.
-- **Not eligible yet, no older version exists** (the item's first release has a `deployment`): nothing is installed. The item is logged as not eligible and installs once the machine becomes eligible.
+- **Not eligible yet, no older version exists** (the item's first release has a `deployment`): nothing is installed. It gets the same warnings as an item whose every version fails `installable_condition`, and installs once the machine becomes eligible.
 
 ### Existing installs (`managed_installs` / `managed_updates`, item already installed)
 
@@ -200,22 +200,22 @@ During catalog lookup, a version the machine isn't eligible for is rejected the 
 ### Other interactions
 
 - **Existing conditions are checked first:** a version must pass every existing check (`minimum_munki_version`, `minimum_os_version` / `maximum_os_version`, `supported_architectures`, and `installable_condition`) before its `deployment` is evaluated. If any of them fails, the deployment is never evaluated: Munki moves on to the next-highest version, nothing is logged as not eligible, and no `Deployments` report entry is written. This lets admins stop an install with a condition unrelated to the deployment, and means "not eligible" always means "this machine could install it, it's just not its turn yet."
-- **`managed_uninstalls`:** not affected. Removals are never gated.
-- **`autoremove`:** only counts from versions the machine is eligible for, so `autoremove` on a gated 2.0 doesn't remove an installed 1.0 until the machine is eligible for 2.0. An item waiting on a deployment is never auto-removed.
+- **`managed_uninstalls`:** an unpinned removal doesn't look at availability, so it isn't affected. A pinned removal, like `A-2.0`, of a version the machine isn't eligible for warns and removes nothing, the same as for a failed `installable_condition`. So does an optional uninstall of an item with no eligible version.
+- **`autoremove`:** not affected. It works by item name and doesn't check availability, the same as for `installable_condition`.
 - **`force_install_after_date` on a gated version:** only applies once the machine is eligible. If the date has already passed by then, the install is forced right away.
 - **Required packages:** processed the way Munki always has, using whichever versions are available to the machine:
   - If eligible Package A says `requires Package B` and the machine isn't eligible for Package B 2.0, Package B 1.0 is used if it's available.
-  - If no version of Package B is available, because its deployment excludes this machine, hasn't reached `start`, or is invalid, Package A waits. It's logged at info level, with no warning or problem item, and installs once Package B is available.
+  - If no version of Package B is available, because its deployment excludes this machine, hasn't reached `start`, or is invalid, Package A gets the same warning and `Can't install` problem item as when Package B fails `installable_condition`. It installs once Package B is available.
   - Munki's existing rule for pinned requirements still applies: once any version of Package B has been processed, `requires Package B-2.0` counts as met, so the first one processed wins.
 
 ### Predicates, logging, and reporting
 
 - **Predicates:** a `deploy_percent` fact is available in `conditional_items` and `installable_condition`. It holds the machine (unsalted) deploy_percent, or the override if one is in effect. It's added in `generatePredicateInfo()` alongside the other computed conditions (e.g. `machine_type`), so it's recorded in the report's existing `Conditions` dict and nowhere else.
-- **Logging:** each version the machine isn't eligible for is logged at info level, e.g. `Firefox 131.0 not eligible: package_deploy_percent 42 > current_deploy_percent 25 (next step 2026-10-14 10:00)`. A machine not being eligible for a version is the feature working as intended, so it's never logged as a warning or error:
-  - When an older version is available, the fallback happens without any warning (Munki doesn't log the versions it rejected when it finds one that works).
-  - When no version is available (e.g. the item's first release is gated), the usual "Could not process item … No pkginfo found in catalogs" warning is suppressed if not being eligible under a deployment is the only reason. The info-level not-eligible line is logged instead. If anything else also rejected a version (e.g. `minimum_os_version`), the existing warnings are logged as they are today.
-  - Only an invalid `deployment` is logged as an error, since that's a real misconfiguration. The usual "Could not process item" warning is skipped there too, since the error already says what's wrong.
-  - An item waiting on a required item that isn't available is logged at info level, as described under "Required packages" above.
+- **Logging:** a rejected version is logged the same way as a failed `installable_condition`:
+  - When an older version is available, the fallback happens without any warning.
+  - When no version is available (e.g. the item's first release is gated), Munki logs a `Rejected item` warning and its usual "Could not process item … No pkginfo found in catalogs" warning.
+  - Each version the machine isn't eligible for is also logged once at info level, e.g. `Firefox 131.0 not eligible: package_deploy_percent 42 > current_deploy_percent 25 (next step 2026-10-14 10:00)`.
+  - An invalid `deployment` is logged once as an error, as a predicate that can't be evaluated is, since that's a real misconfiguration.
 - **Overrides are logged:** when the `DeployPercentOverride` pref or `--deploy-percent` is in effect, each run logs it once at info level, e.g. `deploy_percent overridden to 1 by DeployPercentOverride preference`.
 - **ManagedInstallReport** gets two new top-level keys:
   - `Deployments`: one entry for every item version evaluated against a `deployment`, so admins can see the machine's package_deploy_percent for each pending deployment. An invalid `deployment` has no entry, since it has no percents to report, and logs an error instead. (The machine's unsalted `deploy_percent` is already in `Conditions`.)
@@ -329,8 +329,8 @@ By default it only shows deployments that still need attention: `scheduled`, `in
 |---|---|
 | Schedule, current_deploy_percent, and hash logic (pure functions, easy to test) | new `shared/deployment.swift` |
 | Version gating, as the last check in the chain after `installableConditionOK` | `shared/updatecheck/catalogs.swift` |
-| Quieter handling when a deployment is the only reason an item or its requirement isn't available, and skipping the check for removals | `shared/updatecheck/analyze.swift` |
-| `autoremove` only counting from eligible versions | `getAutoRemovalItems()` in `shared/updatecheck/catalogs.swift` |
+| No changes to `shared/updatecheck/analyze.swift`, since a rejected version behaves like a failed `installable_condition` | |
+| No changes to `getAutoRemovalItems()`, for the same reason | |
 | `deploy_percent` fact | `generatePredicateInfo()` in `shared/facts.swift` |
 | `DeployPercentOverride` pref | `shared/prefs.swift` |
 | `--deploy-percent` run-only override | `managedsoftwareupdate/msuoptions.swift` |

@@ -227,9 +227,6 @@ func processInstall(
     display.debug1("* Processing manifest item \(manifestItemName) for install")
     let (manifestItemNameWithoutVersion, includedVersion) = nameAndVersion(manifestItemName, onlySplitOnHyphens: true)
 
-    let records = DeploymentRecords.shared
-    let itemKey = records.key(manifestItemNameWithoutVersion)
-
     // have we processed this already?
     if let processedInstalls = installInfo["processed_installs"] as? [String],
        processedInstalls.contains(manifestItemName) || processedInstalls.contains(manifestItemNameWithoutVersion)
@@ -245,9 +242,7 @@ func processInstall(
     }
 
     guard let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList) else {
-        if !records.isWaiting(manifestItemName) {
-            display.warning("Could not process item \(manifestItemName) for install. No pkginfo found in catalogs: \(catalogList)")
-        }
+        display.warning("Could not process item \(manifestItemName) for install. No pkginfo found in catalogs: \(catalogList)")
         return false
     }
 
@@ -323,7 +318,6 @@ func processInstall(
     let lowDataExemptForDependencies = lowDataExempt || forceInstallDeadlinePassed(pkginfo) || hasLowDataOverride
     var someDepDeferredForLowData = false
     var someDepFailedOtherwise = false
-    var someDepWaitingOnDeployment = false
     for item in dependencies {
         display.detail("\(name)-\(version) requires \(item). Getting info on \(item)...")
         let success = await processInstall(
@@ -336,17 +330,13 @@ func processInstall(
         )
         if !success {
             dependenciesMet = false
-            if records.isWaiting(item) {
-                someDepWaitingOnDeployment = true
-            } else if dependencyWasLowDataDeferred(item) {
+            if dependencyWasLowDataDeferred(item) {
                 someDepDeferredForLowData = true
             } else {
                 someDepFailedOtherwise = true
             }
         }
     }
-
-    let onlyWaitingOnDeployment = someDepWaitingOnDeployment && !someDepFailedOtherwise
 
     var processedItem = PlistDict()
     processedItem["name"] = name
@@ -360,12 +350,6 @@ func processInstall(
     let installedState = await installedState(pkginfo)
     if installedState == .thisVersionNotInstalled {
         if !dependenciesMet {
-            if onlyWaitingOnDeployment {
-                // not a problem: this item installs once it can get what it requires
-                display.info("\(manifestItemName) is waiting for a required item whose deployment doesn't include this machine yet.")
-                records.waiting.insert(itemKey)
-                return false
-            }
             if someDepDeferredForLowData, !someDepFailedOtherwise {
                 // The only thing blocking this item is a required item that was
                 // deferred on a low data connection. Present this item as
@@ -606,7 +590,7 @@ func processInstall(
         // same or higher version installed
         processedItem["installed"] = true
 
-        if !dependenciesMet, !onlyWaitingOnDeployment {
+        if !dependenciesMet {
             display.warning("Could not resolve all dependencies for \(manifestItemName), but no install or update needed.")
         }
 
@@ -702,9 +686,7 @@ func processManagedUpdate(
     ) { return }
 
     guard let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList) else {
-        if !DeploymentRecords.shared.isWaiting(manifestItemName) {
-            display.warning("Could not process item \(manifestItemName) for update. No pkginfo found in catalogs: \(catalogList) ")
-        }
+        display.warning("Could not process item \(manifestItemName) for update. No pkginfo found in catalogs: \(catalogList) ")
         return
     }
 
@@ -782,9 +764,7 @@ func processOptionalInstall(
     }
     if pkginfo.isEmpty {
         // could not find anything that matches and is applicable
-        if !DeploymentRecords.shared.isWaiting(manifestItemName) {
-            display.warning("Could not process item \(manifestItemName) for optional install. No pkginfo found in catalogs: \(catalogList)")
-        }
+        display.warning("Could not process item \(manifestItemName) for optional install. No pkginfo found in catalogs: \(catalogList)")
         return
     }
 
@@ -966,7 +946,7 @@ func processOptionalUninstall(
         }
     }
 
-    guard let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList, skipDeploymentCheck: true) else {
+    guard let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList) else {
         display.warning("Could not process item \(manifestItemName) for optional uninstall. No pkginfo found in catalogs: \(catalogList)")
         return
     }
@@ -1085,7 +1065,7 @@ func processRemoval(
     var pkginfos = [PlistDict]()
     if !manifestItemVersion.isEmpty {
         // a specific version was specified
-        if let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList, version: manifestItemVersion, skipDeploymentCheck: true) {
+        if let pkginfo = await getItemDetail(manifestItemName, catalogList: catalogList, version: manifestItemVersion) {
             pkginfos.append(pkginfo)
         }
     } else {
